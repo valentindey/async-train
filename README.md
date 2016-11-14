@@ -3,9 +3,10 @@
 This project aims to offer a framework to train machine learning models
  defined as theano computational graphs with asynchronous algorithms.
 
-Currently only the hogwild! algorithm [\[1\]](#ref1) is implemented.
-(implementations of other algorithms can be found in [parallel-nmt](https://github.com/valentindey/parallel-nmt)
- but these lack a clean interface)
+Currently the _hogwild!_ algorithm [\[1\]](#ref1) and _asynchronous dual
+ averaging_ [\[2\]](#ref2) are implemented.
+(an implementation of a third algorithm can be found in [parallel-nmt](https://github.com/valentindey/parallel-nmt)
+ but this lacks a clean interface until I port it over here)
 
 Also, currently only python3 is supported.
 
@@ -23,7 +24,15 @@ To see some options to run it, call
 
     ./mnist.py --help
 
+There are more examples to come.
 
-<a name="ref1">[1]</a>  Recht, B., Re, C., Wright, S., & Niu, F. (2011).
- Hogwild: A lock-free approach to parallelizing stochastic gradient descent.
+
+#### references
+
+<a name="ref1">[1]</a> Recht, B., Re, C., Wright, S., & Niu, F. (2011). 
+ Hogwild: A lock-free approach to parallelizing stochastic gradient descent. 
  In Advances in Neural Information Processing Systems (pp. 693-701).
+ 
+<a name="ref2">[2]</a> Duchi, J., Jordan, M. I., & McMahan, B. (2013). 
+ Estimation, optimization, and parallelism when data is sparse. 
+ In Advances in Neural Information Processing Systems (pp. 2832-2840).

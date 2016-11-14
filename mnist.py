@@ -35,9 +35,12 @@ def build_model(theano_params):
 
 
 @click.command()
-@click.option("--devices", default="cpu,cpu", help="Identifiers of devices to run on.")
+@click.option("--devices", default="cpu,cpu", help="Comma separated tdentifiers of devices to run on.")
+@click.option("--update-scheme", default="hogwild", type=click.Choice(["hogwild", "async_da"]),
+              help="The asynchronous update scheme to apply")
 @click.option("--num-epochs", default=1, help="Number of epochs.")
-def run(devices, num_epochs):
+@click.option("--learning-rate", default=.01, help="Learning rate to apply.")
+def run(devices, update_scheme, num_epochs, learning_rate):
     """Runs a small example of async-train on the MNIST data set."""
 
     (X_train, Y_train), (X_test, Y_test) = mnist.load_data(flatten=True)
@@ -50,7 +53,8 @@ def run(devices, num_epochs):
     params = init_params()
     start_time = time.time()
     trained_params = train_params(params, build_model=build_model, data=data,
-                                  devices=devices.split(","), num_epochs=num_epochs)
+                                  devices=devices.split(","), update_scheme=update_scheme,
+                                  num_epochs=num_epochs, l_rate=learning_rate)
     train_time = time.time() - start_time
     print("Training took {:.4f} seconds.".format(train_time))
 

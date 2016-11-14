@@ -7,10 +7,80 @@ from collections import OrderedDict
 from .shared import SharedParams, SharedCounter, SharedFloat
 
 
-def async_update(device, build_model):
+def async_da_update(device, build_model):
+    """
+        function run on different processes/devices to update the shared parameters
+        with asynchronous dual averaging
+        builds a local copy of the model for this process/device and waits for data
+        to process
+
+        :param device:          the device identifier of the device to run this on
+                                see `theano.sandbox.cuda.run`
+        :param build_model:     a function returning a theano graph for the cost and
+                                the corresponding inputs as TensorTypes
+                                requires the parameters of the model to build as dict
+                                of theano.shared variables {parameter_name: theano_shared}
+                                has an additional return value that is not used here
+                                but facilitates reusing this method in other places
+                                list of inputs first, then the graph (and the optional
+                                return value)
+                                the given function must import theano inside!
+        """
+    # importing theano only inside this function and bind it to the given device
+    import theano.tensor as T
+    import theano.sandbox.cuda
+    theano.sandbox.cuda.use(device)
+
+    process_name = multiprocessing.current_process().name
+
+    # stores the parameters for the currently run process as theano.shared
+    # initialized with the initial parameter values
+    theano_params = OrderedDict()
+    for param_name, param in shared_params.as_dict().items():
+        theano_params[param_name] = theano.shared(param, name=param_name)
+
+    # build the model on this process/device
+    inputs, cost, _ = build_model(theano_params)
+    grads = T.grad(cost, wrt=list(theano_params.values()))
+    f_grads = theano.function(inputs, grads)
+
+    # everything is compiled, this process/device is ready to process data
+    while True:
+        # wait for the next batch of data
+        # until a stop signal is received, that terminates the process
+        cur_data = data_queue.get()
+        if cur_data == "STOP":
+            return
+
+        cur_eta = learning_rate.get_value()
+
+        # in the first iteration, all zs are still all zero and x would become all zero as well
+        # this solution, while trivial, is not desired here!
+        # so we need to work around this
+        # TODO: test what happens if this is worked around differently,
+        # TODO: i.e. with initializing z with .0001 instead of 0
+        if update_count.get_value() > 0:
+            for param_name, param in shared_params.as_dict().items():
+                shared_params[param_name] = -cur_eta * shared_z[param_name]
+                theano_params[param_name] = shared_params[param_name]
+        # note: shared_params and update_count may not be in sync
+        # i.e. the current params do not correspond to the params at timestep t=update_count
+
+        grads = [np.asarray(g) for g in f_grads(*cur_data)]
+
+        for param_name, grad in zip(shared_z.keys(), grads):
+            shared_z[param_name] += grad
+
+        # send information about update to main process
+        num_update = update_count.increment().get_value()
+        update_notify_queue.put((process_name, num_update))
+
+
+
+def hogwild_update(device, build_model):
     """
     function run on different processes/devices to update the shared parameters
-    (currently hogwild! style, i.e. without locks)
+    hogwild! style, i.e. parallelized SGD without any locks
     builds a local copy of the model for this process/device and waits for data
     to process
 
@@ -23,8 +93,8 @@ def async_update(device, build_model):
                             has an additional return value that is not used here
                             but facilitates reusing this method in other places
                             list of inputs first, then the graph (and the optional
-                            return value)
-                            this function must import theano inside!
+                            return value. This *must* be present but can be `None`)
+                            the given function must import theano inside!
     """
 
     # importing theano only inside this function and bind it to the given device
@@ -62,11 +132,9 @@ def async_update(device, build_model):
         push_to_tparams(shared_params.as_dict())
 
         # calculating the gradients with current data
-        cur_grads = f_grads(*cur_data)
-
         # we might need to cast to numpy arrays when working on GPU
         # the results could be wrapped in CudaNdArrays
-        cur_grads = [np.asarray(g) for g in cur_grads]
+        cur_grads = [np.asarray(g) for g in f_grads(*cur_data)]
 
         # this can not be achieved with the updates parameter of theano.function()
         # as we update the shared parameters which are not stored as theano.shared
@@ -79,7 +147,8 @@ def async_update(device, build_model):
         update_notify_queue.put((process_name, num_update))
 
 
-def train_params(initial_params, build_model, data, devices, num_epochs=10):
+def train_params(initial_params, build_model, data, devices, update_scheme="hogwild",
+                 num_epochs=10, l_rate=.01):
     """
 
     :param initial_params:      initial parameters as OrderedDict
@@ -91,19 +160,40 @@ def train_params(initial_params, build_model, data, devices, num_epochs=10):
                                 if mini batch training is desired, this must contain/return these batches already
     :param devices:             list of devices to run training on as expected by theano
                                 see `theano.sandbox.cuda.run`
+    :param update_scheme        the update scheme to apply, one of 'hogwild' or 'async_da'
     :param num_epochs:          number of epochs, i.e. iterations over the training data
-    :return:
+    :param l_rate:              the learning rate to apply
+    :return:                    the trained parameters
     """
 
-    global shared_params, data_queue, learning_rate, update_count, update_notify_queue
-    shared_params = SharedParams(initial_params)
-    learning_rate = SharedFloat(.01)
+    if update_scheme not in ["hogwild", "async_da"]:
+        raise ValueError("Unsupported update scheme:" + str(update_scheme))
+
+    # global variables used in the same way by all update schemes
+    global data_queue, learning_rate, update_count, update_notify_queue
+    learning_rate = SharedFloat(l_rate)
     update_count = SharedCounter()
     mgr = multiprocessing.Manager()
     data_queue = mgr.Queue()
     update_notify_queue = mgr.Queue()
 
-    processes = [multiprocessing.Process(target=async_update, args=(device, build_model),
+    # global variables specific to the update schemes
+    global shared_params
+    if update_scheme == "hogwild":
+        shared_params = SharedParams(initial_params, locked=False)
+        target_func = hogwild_update
+    elif update_scheme == "async_da":
+        shared_params = SharedParams(initial_params, locked=True)
+        target_func = async_da_update
+        # async DA needs an additional map storing the sum of all previous updates
+        # these sums are initialized all zero
+        global shared_z
+        shared_z_zero = OrderedDict()
+        for param_name, param in initial_params.items():
+            shared_z_zero[param_name] = np.zeros_like(param)
+        shared_z = SharedParams(shared_z_zero, locked=True)
+
+    processes = [multiprocessing.Process(target=target_func, args=(device, build_model),
                                          name="process on {}".format(device)) for device in devices]
 
     for p in processes:
