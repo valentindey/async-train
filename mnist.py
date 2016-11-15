@@ -35,7 +35,7 @@ def build_model(theano_params):
 
 
 @click.command()
-@click.option("--devices", default="cpu,cpu", help="Comma separated tdentifiers of devices to run on.")
+@click.option("--devices", default="cpu,cpu", help="Comma separated identifiers of devices to run on.")
 @click.option("--update-scheme", default="hogwild", type=click.Choice(["hogwild", "async_da"]),
               help="The asynchronous update scheme to apply")
 @click.option("--num-epochs", default=1, help="Number of epochs.")
@@ -57,6 +57,7 @@ def run(devices, update_scheme, num_epochs, learning_rate):
                                   num_epochs=num_epochs, l_rate=learning_rate)
     train_time = time.time() - start_time
     print("Training took {:.4f} seconds.".format(train_time))
+    print("(includes time used for compilation of theano functions)")
 
     # to test the trained parameters, we need to rebuild the model
     # note that we should not import theano earlier, in order

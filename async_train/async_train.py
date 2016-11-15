@@ -56,9 +56,8 @@ def async_da_update(device, build_model):
 
         # in the first iteration, all zs are still all zero and x would become all zero as well
         # this solution, while trivial, is not desired here!
-        # so we need to work around this
-        # TODO: test what happens if this is worked around differently,
-        # TODO: i.e. with initializing z with .0001 instead of 0
+        # the workaround is to "skip" the first update
+        # TODO: this workaround might not be the best solution to this problem
         if update_count.get_value() > 0:
             for param_name, param in shared_params.as_dict().items():
                 shared_params[param_name] = -cur_eta * shared_z[param_name]

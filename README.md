@@ -19,12 +19,14 @@ There are a lot of possible improvements on my todo-list, above all the
 `mnist.py` provides an example of a logitic regression classifier
  trained for classifying the MNIST data set. While not being meaningful, 
  this exemplifies the usage of *async-train* in code form.
+ (_async\_da_ seems not work very well in this setting)
 
 To see some options to run it, call
 
     ./mnist.py --help
 
-There are more examples to come.
+There are more examples to come. They most probably all will require
+ `click` for command line argument parsing.
 
 
 #### references
