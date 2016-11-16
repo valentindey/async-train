@@ -3,18 +3,20 @@
 This project aims to offer a framework to train machine learning models
  defined as theano computational graphs with asynchronous algorithms.
 
-Currently the _hogwild!_ algorithm [\[1\]](#ref1) and _asynchronous dual
- averaging_ [\[2\]](#ref2) are implemented.
-(an implementation of a third algorithm can be found in [parallel-nmt](https://github.com/valentindey/parallel-nmt)
- but this lacks a clean interface until I port it over here)
+Currently the _hogwild!_ algorithm [\[1\]](#ref1), _asynchronous dual
+ averaging_ and _asynchronous AdaGrad_ [\[2\]](#ref2) are implemented.
 
-Also, currently only python3 is supported.
+Also, currently only python3 is supported, i.e. the code is only tested
+ against this version of python.
 
 *async-train* supports training on multiple GPUs. While this is actually
  the main objective, it is not thoroughly tested, yet.
 
 There are a lot of possible improvements on my todo-list, above all the 
  problem of slow data transfer to GPUs.
+
+
+### examples
 
 `mnist.py` provides an example of a logitic regression classifier
  trained for classifying the MNIST data set. While not being meaningful, 
@@ -29,7 +31,7 @@ There are more examples to come. They most probably all will require
  `click` for command line argument parsing.
 
 
-#### references
+### references
 
 <a name="ref1">[1]</a> Recht, B., Re, C., Wright, S., & Niu, F. (2011). 
  Hogwild: A lock-free approach to parallelizing stochastic gradient descent. 

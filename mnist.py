@@ -10,6 +10,9 @@ from async_train.datasets import mnist
 from async_train import train_params
 
 
+np.random.seed(1234)
+
+
 def init_params():
     params = OrderedDict()
     params["weights"] = np.random.random((28*28, 10))
@@ -36,7 +39,7 @@ def build_model(theano_params):
 
 @click.command()
 @click.option("--devices", default="cpu,cpu", help="Comma separated identifiers of devices to run on.")
-@click.option("--update-scheme", default="hogwild", type=click.Choice(["hogwild", "async_da"]),
+@click.option("--update-scheme", default="hogwild", type=click.Choice(["hogwild", "async_da", "async_agrad"]),
               help="The asynchronous update scheme to apply")
 @click.option("--num-epochs", default=1, help="Number of epochs.")
 @click.option("--learning-rate", default=.01, help="Learning rate to apply.")
