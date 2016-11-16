@@ -1,7 +1,8 @@
 # async-train
 
 This project aims to offer a framework to train machine learning models
- defined as theano computational graphs with asynchronous algorithms.
+ defined as [theano](https://github.com/Theano/theano/) computational graphs with asynchronous algorithms.
+ Obviously, `theano` is a requirement.
 
 Currently the _hogwild!_ algorithm [\[1\]](#ref1), _asynchronous dual
  averaging_ and _asynchronous AdaGrad_ [\[2\]](#ref2) are implemented.
