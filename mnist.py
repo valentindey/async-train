@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import click
+import logging
 import time
 import numpy as np
 from collections import OrderedDict
@@ -41,7 +42,7 @@ def build_model(theano_params):
 @click.option("--devices", default="cpu,cpu", help="Comma separated identifiers of devices to run on.")
 @click.option("--update-scheme", default="hogwild", type=click.Choice(["hogwild", "async_da", "async_agrad"]),
               help="The asynchronous update scheme to apply")
-@click.option("--num-epochs", default=1, help="Number of epochs.")
+@click.option("--num-epochs", default=2, help="Number of epochs.")
 @click.option("--learning-rate", default=.01, help="Learning rate to apply.")
 def run(devices, update_scheme, num_epochs, learning_rate):
     """Runs a small example of async-train on the MNIST data set."""
@@ -57,7 +58,8 @@ def run(devices, update_scheme, num_epochs, learning_rate):
     start_time = time.time()
     trained_params = train_params(params, build_model=build_model, data=data,
                                   devices=devices.split(","), update_scheme=update_scheme,
-                                  num_epochs=num_epochs, l_rate=learning_rate)
+                                  num_epochs=num_epochs, l_rate=learning_rate,
+                                  log_level=logging.INFO)
     train_time = time.time() - start_time
     print("Training took {:.4f} seconds.".format(train_time))
     print("(includes time used for compilation of theano functions)")

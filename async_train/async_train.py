@@ -4,7 +4,17 @@ import multiprocessing
 import numpy as np
 from collections import OrderedDict
 
+import logging
+import multiprocessing_logging
+
 from .shared import SharedParams, SharedCounter, SharedFloat
+
+
+LOGGER = logging.Logger(__name__)
+LOG_FORMATTER = logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%Y-%m-%d %H:%M:%S")
+stream_handler = multiprocessing_logging.MultiProcessingHandler("mp-handler-0", logging.StreamHandler())
+stream_handler.setFormatter(LOG_FORMATTER)
+LOGGER.addHandler(stream_handler)
 
 
 def async_agrad_update(device, build_model):
@@ -32,25 +42,26 @@ def async_agrad_update(device, build_model):
     theano.sandbox.cuda.use(device)
 
     process_name = multiprocessing.current_process().name
-
+    
     # stores the parameters for the currently run process as theano.shared
     # initialized with the initial parameter values
     theano_params = OrderedDict()
     for param_name, param in shared_params.as_dict().items():
         theano_params[param_name] = theano.shared(param, name=param_name)
 
-    # build the model on this process/device
+    LOGGER.info("({}) building model on {}".format(process_name, device))
     inputs, cost, _ = build_model(theano_params)
     grads = T.grad(cost, wrt=list(theano_params.values()))
     f_grads = theano.function(inputs, grads)
 
-    # everything is compiled, this process/device is ready to process data
+    LOGGER.info("({}) model compiled on {}, waiting for data".format(process_name, device))
     while True:
-        # wait for the next batch of data
-        # until a stop signal is received, that terminates the process
+
         cur_data = data_queue.get()
+
         if cur_data == "STOP":
-            return
+            LOGGER.info("({}) terminating".format(process_name))
+            break
 
         cur_eta = learning_rate.get_value()
 
@@ -77,7 +88,7 @@ def async_agrad_update(device, build_model):
 
         # send information about update to main process
         num_update = update_count.increment().get_value()
-        update_notify_queue.put((process_name, num_update))
+        update_notify_queue.put(num_update)
 
 
 def async_da_update(device, build_model):
@@ -112,18 +123,19 @@ def async_da_update(device, build_model):
     for param_name, param in shared_params.as_dict().items():
         theano_params[param_name] = theano.shared(param, name=param_name)
 
-    # build the model on this process/device
+    LOGGER.info("({}) building model on {}".format(process_name, device))
     inputs, cost, _ = build_model(theano_params)
     grads = T.grad(cost, wrt=list(theano_params.values()))
     f_grads = theano.function(inputs, grads)
 
-    # everything is compiled, this process/device is ready to process data
+    LOGGER.info("({}) model compiled on {}, waiting for data".format(process_name, device))
     while True:
-        # wait for the next batch of data
-        # until a stop signal is received, that terminates the process
+
         cur_data = data_queue.get()
+
         if cur_data == "STOP":
-            return
+            LOGGER.info("({}) terminating".format(process_name))
+            break
 
         cur_eta = learning_rate.get_value()
 
@@ -145,7 +157,7 @@ def async_da_update(device, build_model):
 
         # send information about update to main process
         num_update = update_count.increment().get_value()
-        update_notify_queue.put((process_name, num_update))
+        update_notify_queue.put(num_update)
 
 
 def hogwild_update(device, build_model):
@@ -186,18 +198,19 @@ def hogwild_update(device, build_model):
         for param_name, param in params.items():
             theano_params[param_name].set_value(param)
 
-    # build the model on this process/device
+    LOGGER.info("({}) building model on {}".format(process_name, device))
     inputs, cost, _ = build_model(theano_params)
     grads = T.grad(cost, wrt=list(theano_params.values()))
     f_grads = theano.function(inputs, grads)
 
-    # everything is compiled, this process/device is ready to process data
+    LOGGER.info("({}) model compiled on {}, waiting for data".format(process_name, device))
     while True:
-        # wait for the next batch of data
-        # until a stop signal is received, that terminates the process
+
         cur_data = data_queue.get()
+
         if cur_data == "STOP":
-            return
+            LOGGER.info("({}) terminating".format(process_name))
+            break
 
         # get current parameters from shared parameters to compute gradient with
         push_to_tparams(shared_params.as_dict())
@@ -215,11 +228,11 @@ def hogwild_update(device, build_model):
 
         # send information about update to main process
         num_update = update_count.increment().get_value()
-        update_notify_queue.put((process_name, num_update))
+        update_notify_queue.put(num_update)
 
 
 def train_params(initial_params, build_model, data, devices, update_scheme="hogwild",
-                 num_epochs=10, l_rate=.01):
+                 num_epochs=10, l_rate=.01, log_level=logging.WARNING, log_file=None):
     """
 
     :param initial_params:      initial parameters as OrderedDict
@@ -238,7 +251,13 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
     """
 
     if update_scheme not in ["hogwild", "async_da", "async_agrad"]:
-        raise ValueError("Unsupported update scheme:" + str(update_scheme))
+        raise ValueError("unsupported update scheme:" + str(update_scheme))
+
+    LOGGER.setLevel(log_level)
+    if log_file:
+        file_handler = multiprocessing_logging.MultiProcessingHandler("mp-handler-1", logging.FileHandler(log_file))
+        file_handler.setFormatter(LOG_FORMATTER)
+        LOGGER.addHandler(file_handler)
 
     # global variables used in the same way by all update schemes
     global data_queue, learning_rate, update_count, update_notify_queue
@@ -248,7 +267,7 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
     data_queue = mgr.Queue()
     update_notify_queue = mgr.Queue()
 
-    # global variables specific to the update schemes
+    LOGGER.info("setting up global variables specific to update scheme")
     global shared_params
     global shared_z
     global shared_s
@@ -276,35 +295,38 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
         shared_z = SharedParams(shared_z_zero, locked=True)
         shared_s = SharedParams(shared_z_zero, locked=True)
 
+    LOGGER.info("starting processes on {} with {}".format(devices, update_scheme))
     processes = [multiprocessing.Process(target=target_func, args=(device, build_model),
                                          name="process on {}".format(device)) for device in devices]
-
     for p in processes:
+        p.daemon = True
         p.start()
 
-    for num_epoch in range(1, num_epochs+1):
+    for epoch in range(1, num_epochs+1):
+        LOGGER.info("epoch {}/{}".format(epoch, num_epochs))
 
         # fill up the batch queue for this epoch
         for d in data:
             data_queue.put(d)
 
         while True:
+
             # wait until a new update was made and get its number
             # this *may* be in a somewhat weird order
             # but the number returned should be almost exact
-            process_name, num_updates = update_notify_queue.get()
+            num_updates = update_notify_queue.get()
 
             # TODO: same procedure for validation, model checkpointing, ...
             # TODO: variable update indexes, that trigger these things
             if num_updates % 1000 == 0:
-                print("epoch {}, update {}".format(num_epoch, num_updates))
+                LOGGER.info("update {}".format(num_updates))
 
             if data_queue.empty():
                 break
 
+    LOGGER.info("training finished")
     for _ in processes:
         data_queue.put("STOP")
-    for p in processes:
-        p.join()
+    # daemon processes will get joined automatically
 
     return shared_params.as_dict()
