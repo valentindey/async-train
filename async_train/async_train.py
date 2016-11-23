@@ -232,11 +232,14 @@ def hogwild_update(device, build_model):
 
 
 def train_params(initial_params, build_model, data, devices, update_scheme="hogwild",
-                 num_epochs=10, l_rate=.01, log_level=logging.WARNING, log_file=None):
+                 num_epochs=10, l_rate=.01, log_level=logging.WARNING, log_file=None,
+                 valid_data=None, valid_freq=5000, patience=5):
     """
 
     :param initial_params:      initial parameters as OrderedDict
                                 {parameter_name: numpy_array}
+                                note that ALL parameters will be updated according to the same update rule without
+                                exceptions
     :param build_model:         see `async_update`
     :param data:                data points used for training as the compiled cost function expects it
                                 can be an iterator, generator or list
@@ -247,6 +250,16 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
     :param update_scheme        the update scheme to apply, one of 'hogwild', 'async_da' or 'async_agrad'
     :param num_epochs:          number of epochs, i.e. iterations over the training data
     :param l_rate:              the learning rate to apply
+    :param log_level:           level of log messages to show, see logging module
+    :param valid_data:          optional validation data
+                                also requires tuples corresponding to the number of inputs to the cost graph
+    :param valid_freq:          validation will be performed after this many updates, has no effect if valid_data
+                                is not present
+                                processing on sub-processes continues during validation, this should not be too low
+                                in order to avoid slowdowns because sub-processes need to wait for validation to finish
+                                (note that validation is currently only performed on CPU)
+    :param patience:            perform this many validations before triggering early stopping because validation error
+                                did not decrease, has no effect if valid_data is not present
     :return:                    the trained parameters
     """
 
@@ -302,6 +315,25 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
         p.daemon = True
         p.start()
 
+    best_params = None
+    if valid_data:
+        LOGGER.info("compiling model on main process for validation")
+        import theano
+        theano_params = OrderedDict()
+        for param_name, param in initial_params.items():
+            theano_params[param_name] = theano.shared(param, name=param_name)
+
+        def push_to_tparams(params):
+            for param_name, param in params.items():
+                theano_params[param_name].set_value(param)
+        inputs, cost, _ = build_model(theano_params)
+        f_cost = theano.function(inputs, cost)
+        best_params = initial_params
+        best_valid_error = np.inf
+        patience_left = patience
+
+    early_stop = False
+
     for epoch in range(1, num_epochs+1):
         LOGGER.info("epoch {}/{}".format(epoch, num_epochs))
 
@@ -309,24 +341,50 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
         for d in data:
             data_queue.put(d)
 
-        while True:
+        while not early_stop:
 
             # wait until a new update was made and get its number
             # this *may* be in a somewhat weird order
             # but the number returned should be almost exact
             num_updates = update_notify_queue.get()
 
-            # TODO: same procedure for validation, model checkpointing, ...
-            # TODO: variable update indexes, that trigger these things
             if num_updates % 1000 == 0:
                 LOGGER.info("update {}".format(num_updates))
 
-            if data_queue.empty():
+            if valid_data and num_updates % valid_freq == 0:
+                LOGGER.info("update {}, validating".format(num_updates))
+                cur_params = shared_params.as_dict()
+                push_to_tparams(cur_params)
+                cur_valid_error = f_cost(*valid_data)  # TODO: allow valid_data in batches
+                LOGGER.info("validation error: {}".format(cur_valid_error))
+                if cur_valid_error < best_valid_error:
+                    LOGGER.info("validation error did decrease compared to previous best value {}".format(best_valid_error))
+                    patience_left = patience
+                    best_params = cur_params
+                    best_valid_error = cur_valid_error
+                else:
+                    LOGGER.info("validation error did not decrease compared to current best value {}".format(best_valid_error))
+                    patience_left -= 1
+
+                if patience_left == 0:
+                    LOGGER.info("validation error did not decrease the last {} times, triggering early stopping".format(patience))
+                    # early stopping triggered
+                    early_stop = True
+
+            # TODO: model checkpointing
+
+            if data_queue.empty() or early_stop:
                 break
+
+        if early_stop:
+            # break out of epoch loop and remove all left data points from the queue, no further processing necessary
+            while not data_queue.empty():
+                data_queue.get()
+            break
 
     LOGGER.info("training finished")
     for _ in processes:
         data_queue.put("STOP")
     # daemon processes will get joined automatically
 
-    return shared_params.as_dict()
+    return best_params or shared_params.as_dict()

@@ -50,16 +50,21 @@ def run(devices, update_scheme, num_epochs, learning_rate):
     (X_train, Y_train), (X_test, Y_test) = mnist.load_data(flatten=True)
 
     batch_size = 32
+    valid_split = int(len(X_train) * .8)
     data = [(X_train[i * batch_size:(i + 1) * batch_size],
              Y_train[i * batch_size:(i + 1) * batch_size])
-            for i in range(len(X_train)//batch_size)]
+            for i in range(valid_split-batch_size)]
+
+    X_valid = X_train[valid_split:]
+    Y_valid = Y_train[valid_split:]
 
     params = init_params()
     start_time = time.time()
     trained_params = train_params(params, build_model=build_model, data=data,
                                   devices=devices.split(","), update_scheme=update_scheme,
                                   num_epochs=num_epochs, l_rate=learning_rate,
-                                  log_level=logging.INFO)
+                                  log_level=logging.INFO, log_file="mnist.log",
+                                  valid_data=(X_valid, Y_valid), valid_freq=100)
     train_time = time.time() - start_time
     print("Training took {:.4f} seconds.".format(train_time))
     print("(includes time used for compilation of theano functions)")
