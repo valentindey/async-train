@@ -342,13 +342,13 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
         LOGGER.info("saving initial model parameters to {}".format(extended_filename))
         np.savez(extended_filename, **initial_params)
         training_parameter_file = filename + ".json"
-        LOGGER.info("saving training parameters to {}".format(training_parameter_file))
+        LOGGER.info("saving training options to {}".format(training_parameter_file))
+        train_options = {"devices": devices,
+                         "update_scheme": update_scheme,
+                         "l_rate": l_rate}
+        train_options.update(**kwargs)
         with open(training_parameter_file, "w") as f:
-            json.dump({"devices": devices,
-                       "update_scheme": update_scheme,
-                       "num_epochs": num_epochs,
-                       "l_rate": l_rate},
-                      f, indent=4)
+            json.dump(train_options, f, indent=4)
 
     early_stop = False
 
