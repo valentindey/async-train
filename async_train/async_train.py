@@ -46,6 +46,7 @@ def async_agrad_update(device, build_model, **kwargs):
     LOGGER.info("({}) building model on {}".format(process_name, device))
     inputs, cost, _ = build_model(theano_params, **kwargs)
     grads = T.grad(cost, wrt=list(theano_params.values()))
+    # TODO: gradient clipping
     f_grads = theano.function(inputs, grads)
 
     LOGGER.info("({}) model compiled on {}, waiting for data".format(process_name, device))
@@ -113,6 +114,7 @@ def async_da_update(device, build_model, **kwargs):
     LOGGER.info("({}) building model on {}".format(process_name, device))
     inputs, cost, _ = build_model(theano_params, **kwargs)
     grads = T.grad(cost, wrt=list(theano_params.values()))
+    # TODO: gradient clipping
     f_grads = theano.function(inputs, grads)
 
     LOGGER.info("({}) model compiled on {}, waiting for data".format(process_name, device))
@@ -181,6 +183,7 @@ def hogwild_update(device, build_model, **kwargs):
     LOGGER.info("({}) building model on {}".format(process_name, device))
     inputs, cost, _ = build_model(theano_params, **kwargs)
     grads = T.grad(cost, wrt=list(theano_params.values()))
+    # TODO: gradient clipping
     f_grads = theano.function(inputs, grads)
 
     LOGGER.info("({}) model compiled on {}, waiting for data".format(process_name, device))
@@ -331,6 +334,9 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
         patience_left = patience
 
     if save_to:
+        dir_path = os.path.dirname(save_to)
+        if not os.path.exists(dir_path):
+            os.makedirs(dir_path)
         filename, ext = os.path.splitext(save_to)
         extended_filename = filename + "_epoch_0_update_0" + ext
         LOGGER.info("saving initial model parameters to {}".format(extended_filename))
