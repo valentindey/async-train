@@ -44,7 +44,8 @@ def build_model(theano_params):
               help="The asynchronous update scheme to apply")
 @click.option("--num-epochs", default=2, help="Number of epochs.")
 @click.option("--learning-rate", default=.01, help="Learning rate to apply.")
-def run(devices, update_scheme, num_epochs, learning_rate):
+@click.option("--save-to", default="mnist.npz", help="file to save the model to")
+def run(devices, update_scheme, num_epochs, learning_rate, save_to):
     """Runs a small example of async-train on the MNIST data set."""
 
     (X_train, Y_train), (X_test, Y_test) = mnist.load_data(flatten=True)
@@ -64,7 +65,8 @@ def run(devices, update_scheme, num_epochs, learning_rate):
                                   devices=devices.split(","), update_scheme=update_scheme,
                                   num_epochs=num_epochs, l_rate=learning_rate,
                                   log_level=logging.INFO, log_file="mnist.log",
-                                  valid_data=(X_valid, Y_valid), valid_freq=100)
+                                  valid_data=(X_valid, Y_valid), valid_freq=100,
+                                  save_to=save_to, save_freq=100)
     train_time = time.time() - start_time
     print("Training took {:.4f} seconds.".format(train_time))
     print("(includes time used for compilation of theano functions)")

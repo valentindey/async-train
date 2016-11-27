@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
-
+import json
 import multiprocessing
+import os
+
 import numpy as np
 from collections import OrderedDict
 
@@ -233,7 +235,8 @@ def hogwild_update(device, build_model):
 
 def train_params(initial_params, build_model, data, devices, update_scheme="hogwild",
                  num_epochs=10, l_rate=.01, log_level=logging.WARNING, log_file=None,
-                 valid_data=None, valid_freq=5000, patience=5):
+                 valid_data=None, valid_freq=5000, patience=5,
+                 save_to=None, save_freq=5000):
     """
 
     :param initial_params:      initial parameters as OrderedDict
@@ -260,6 +263,8 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
                                 (note that validation is currently only performed on CPU)
     :param patience:            perform this many validations before triggering early stopping because validation error
                                 did not decrease, has no effect if valid_data is not present
+    :param save_to:          the file to save the model parameters in as numpy npz file
+    :param save_freq:           saves the model after this many updates, has no effect if 'model_name' is not set
     :return:                    the trained parameters
     """
 
@@ -271,6 +276,9 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
         file_handler = multiprocessing_logging.MultiProcessingHandler("mp-handler-1", logging.FileHandler(log_file))
         file_handler.setFormatter(LOG_FORMATTER)
         LOGGER.addHandler(file_handler)
+
+    LOGGER.info("training parameters with {} on {} with learning rate {} for {} epochs"
+                .format(update_scheme, devices, l_rate, num_epochs))
 
     # global variables used in the same way by all update schemes
     global data_queue, learning_rate, update_count, update_notify_queue
@@ -317,7 +325,7 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
 
     best_params = None
     if valid_data:
-        LOGGER.info("compiling model on main process for validation")
+        LOGGER.info("compiling model for main process for validation")
         import theano
         theano_params = OrderedDict()
         for param_name, param in initial_params.items():
@@ -332,10 +340,24 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
         best_valid_error = np.inf
         patience_left = patience
 
+    if save_to:
+        filename, ext = os.path.splitext(save_to)
+        extended_filename = filename + "_epoch_0_update_0" + ext
+        LOGGER.info("saving initial model parameters to {}".format(extended_filename))
+        np.savez(extended_filename, **initial_params)
+        training_parameter_file = filename + ".json"
+        LOGGER.info("saving training parameters to {}".format(training_parameter_file))
+        with open(training_parameter_file, "w") as f:
+            json.dump({"devices": devices,
+                       "update_scheme": update_scheme,
+                       "num_epochs": num_epochs,
+                       "l_rate": l_rate},
+                      f, indent=4)
+
     early_stop = False
 
-    for epoch in range(1, num_epochs+1):
-        LOGGER.info("epoch {}/{}".format(epoch, num_epochs))
+    for epoch_idx in range(1, num_epochs+1):
+        LOGGER.info("epoch {}/{}".format(epoch_idx, num_epochs))
 
         # fill up the batch queue for this epoch
         for d in data:
@@ -346,13 +368,13 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
             # wait until a new update was made and get its number
             # this *may* be in a somewhat weird order
             # but the number returned should be almost exact
-            num_updates = update_notify_queue.get()
+            update_idx = update_notify_queue.get()
 
-            if num_updates % 1000 == 0:
-                LOGGER.info("update {}".format(num_updates))
+            if update_idx % 1000 == 0:
+                LOGGER.info("update {}".format(update_idx))
 
-            if valid_data and num_updates % valid_freq == 0:
-                LOGGER.info("update {}, validating".format(num_updates))
+            if valid_data and update_idx % valid_freq == 0:
+                LOGGER.info("update {}, validating".format(update_idx))
                 cur_params = shared_params.as_dict()
                 push_to_tparams(cur_params)
                 cur_valid_error = f_cost(*valid_data)  # TODO: allow valid_data in batches
@@ -363,15 +385,21 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
                     best_params = cur_params
                     best_valid_error = cur_valid_error
                 else:
-                    LOGGER.info("validation error did not decrease compared to current best value {}".format(best_valid_error))
                     patience_left -= 1
+                    LOGGER.info("validation error did not decrease compared to current best value {}, patience left: {}"
+                                .format(best_valid_error, patience_left))
 
                 if patience_left == 0:
                     LOGGER.info("validation error did not decrease the last {} times, triggering early stopping".format(patience))
                     # early stopping triggered
                     early_stop = True
 
-            # TODO: model checkpointing
+            if save_to and update_idx % save_freq == 0:
+                cur_params = shared_params.as_dict()
+                filename, ext = os.path.splitext(save_to)
+                extended_filename = filename + "_epoch_" + str(epoch_idx) + "_update_" + str(update_idx) + ext
+                LOGGER.info("update {}, saving current model parameters to {}".format(update_idx, extended_filename))
+                np.savez(extended_filename, **cur_params)
 
             if data_queue.empty() or early_stop:
                 break
@@ -386,5 +414,9 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
     for _ in processes:
         data_queue.put("STOP")
     # daemon processes will get joined automatically
+
+    if save_to:
+        LOGGER.info("saving best model parameters to {}".format(save_to))
+        np.savez(filename, **best_params)
 
     return best_params or shared_params.as_dict()
