@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import json
 import multiprocessing
 import os
@@ -19,25 +18,18 @@ stream_handler.setFormatter(LOG_FORMATTER)
 LOGGER.addHandler(stream_handler)
 
 
-def async_agrad_update(device, build_model):
+def async_agrad_update(device, build_model, **kwargs):
     """
-        function run on different processes/devices to update the shared parameters
-        with asynchronous adaptive gradient (async AdaGrad)
-        builds a local copy of the model for this process/device and waits for data
-        to process
+    function run on different processes/devices to update the shared parameters
+    with asynchronous adaptive gradient (async AdaGrad)
+    builds a local copy of the model for this process/device and waits for data
+    to process
 
-        :param device:          the device identifier of the device to run this on
-                                see `theano.sandbox.cuda.run`
-        :param build_model:     a function returning a theano graph for the cost and
-                                the corresponding inputs as TensorTypes
-                                requires the parameters of the model to build as dict
-                                of theano.shared variables {parameter_name: theano_shared}
-                                has an additional return value that is not used here
-                                but facilitates reusing this method in other places
-                                list of inputs first, then the graph (and the optional
-                                return value)
-                                the given function must import theano inside!
-        """
+    :param device:          the device identifier of the device to run this on
+                            see `theano.sandbox.cuda.run`
+    :param build_model:     a function returning a theano graph for the cost and
+                            the corresponding inputs as TensorTypes as described in `train`
+    """
     # importing theano only inside this function and bind it to the given device
     import theano.tensor as T
     import theano.sandbox.cuda
@@ -52,7 +44,7 @@ def async_agrad_update(device, build_model):
         theano_params[param_name] = theano.shared(param, name=param_name)
 
     LOGGER.info("({}) building model on {}".format(process_name, device))
-    inputs, cost, _ = build_model(theano_params)
+    inputs, cost, _ = build_model(theano_params, **kwargs)
     grads = T.grad(cost, wrt=list(theano_params.values()))
     f_grads = theano.function(inputs, grads)
 
@@ -93,25 +85,18 @@ def async_agrad_update(device, build_model):
         update_notify_queue.put(num_update)
 
 
-def async_da_update(device, build_model):
+def async_da_update(device, build_model, **kwargs):
     """
-        function run on different processes/devices to update the shared parameters
-        with asynchronous dual averaging
-        builds a local copy of the model for this process/device and waits for data
-        to process
+    function run on different processes/devices to update the shared parameters
+    with asynchronous dual averaging
+    builds a local copy of the model for this process/device and waits for data
+    to process
 
-        :param device:          the device identifier of the device to run this on
-                                see `theano.sandbox.cuda.run`
-        :param build_model:     a function returning a theano graph for the cost and
-                                the corresponding inputs as TensorTypes
-                                requires the parameters of the model to build as dict
-                                of theano.shared variables {parameter_name: theano_shared}
-                                has an additional return value that is not used here
-                                but facilitates reusing this method in other places
-                                list of inputs first, then the graph (and the optional
-                                return value)
-                                the given function must import theano inside!
-        """
+    :param device:          the device identifier of the device to run this on
+                            see `theano.sandbox.cuda.run`
+    :param build_model:     a function returning a theano graph for the cost and
+                            the corresponding inputs as TensorTypes as described in `train`
+    """
     # importing theano only inside this function and bind it to the given device
     import theano.tensor as T
     import theano.sandbox.cuda
@@ -126,7 +111,7 @@ def async_da_update(device, build_model):
         theano_params[param_name] = theano.shared(param, name=param_name)
 
     LOGGER.info("({}) building model on {}".format(process_name, device))
-    inputs, cost, _ = build_model(theano_params)
+    inputs, cost, _ = build_model(theano_params, **kwargs)
     grads = T.grad(cost, wrt=list(theano_params.values()))
     f_grads = theano.function(inputs, grads)
 
@@ -162,7 +147,7 @@ def async_da_update(device, build_model):
         update_notify_queue.put(num_update)
 
 
-def hogwild_update(device, build_model):
+def hogwild_update(device, build_model, **kwargs):
     """
     function run on different processes/devices to update the shared parameters
     hogwild! style, i.e. parallelized SGD without any locks
@@ -172,14 +157,7 @@ def hogwild_update(device, build_model):
     :param device:          the device identifier of the device to run this on
                             see `theano.sandbox.cuda.run`
     :param build_model:     a function returning a theano graph for the cost and
-                            the corresponding inputs as TensorTypes
-                            requires the parameters of the model to build as dict
-                            of theano.shared variables {parameter_name: theano_shared}
-                            has an additional return value that is not used here
-                            but facilitates reusing this method in other places
-                            list of inputs first, then the graph (and the optional
-                            return value. This *must* be present but can be `None`)
-                            the given function must import theano inside!
+                            the corresponding inputs as TensorTypes as described in `train`
     """
 
     # importing theano only inside this function and bind it to the given device
@@ -201,7 +179,7 @@ def hogwild_update(device, build_model):
             theano_params[param_name].set_value(param)
 
     LOGGER.info("({}) building model on {}".format(process_name, device))
-    inputs, cost, _ = build_model(theano_params)
+    inputs, cost, _ = build_model(theano_params, **kwargs)
     grads = T.grad(cost, wrt=list(theano_params.values()))
     f_grads = theano.function(inputs, grads)
 
@@ -236,14 +214,25 @@ def hogwild_update(device, build_model):
 def train_params(initial_params, build_model, data, devices, update_scheme="hogwild",
                  num_epochs=10, l_rate=.01, log_level=logging.WARNING, log_file=None,
                  valid_data=None, valid_freq=5000, patience=5,
-                 save_to=None, save_freq=5000):
+                 save_to=None, save_freq=5000, **kwargs):
     """
+    trains the parameters of the model compiled with 'build_model' according to 'update_scheme'
+
 
     :param initial_params:      initial parameters as OrderedDict
                                 {parameter_name: numpy_array}
                                 note that ALL parameters will be updated according to the same update rule without
                                 exceptions
-    :param build_model:         see `async_update`
+    :param build_model:         a function returning a theano graph for the cost and
+                                the corresponding inputs as TensorTypes
+                                requires the parameters of the model to build as dict
+                                of theano.shared variables {parameter_name: theano_shared}
+                                has an additional return value that is not used here
+                                but facilitates reusing this method in other places
+                                list of inputs first, then the graph (and the optional
+                                return value)
+                                the given function must import theano inside!
+                                additional arguments to this function can be given with kwargs
     :param data:                data points used for training as the compiled cost function expects it
                                 can be an iterator, generator or list
                                 requires tuples corresponding to the number of inputs to the cost graph
@@ -263,8 +252,9 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
                                 (note that validation is currently only performed on CPU)
     :param patience:            perform this many validations before triggering early stopping because validation error
                                 did not decrease, has no effect if valid_data is not present
-    :param save_to:          the file to save the model parameters in as numpy npz file
+    :param save_to:             the file to save the model parameters in as numpy npz file
     :param save_freq:           saves the model after this many updates, has no effect if 'model_name' is not set
+    :param kwargs:              additional keyword arguments to 'build_model'
     :return:                    the trained parameters
     """
 
@@ -317,7 +307,7 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
         shared_s = SharedParams(shared_z_zero, locked=True)
 
     LOGGER.info("starting processes on {} with {}".format(devices, update_scheme))
-    processes = [multiprocessing.Process(target=target_func, args=(device, build_model),
+    processes = [multiprocessing.Process(target=target_func, args=(device, build_model), kwargs=kwargs,
                                          name="process on {}".format(device)) for device in devices]
     for p in processes:
         p.daemon = True
@@ -334,7 +324,7 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
         def push_to_tparams(params):
             for param_name, param in params.items():
                 theano_params[param_name].set_value(param)
-        inputs, cost, _ = build_model(theano_params)
+        inputs, cost, _ = build_model(theano_params, **kwargs)
         f_cost = theano.function(inputs, cost)
         best_params = initial_params
         best_valid_error = np.inf
@@ -420,3 +410,4 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
         np.savez(filename, **best_params)
 
     return best_params or shared_params.as_dict()
+
