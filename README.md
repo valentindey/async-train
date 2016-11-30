@@ -19,9 +19,9 @@ There are a lot of possible improvements on my todo-list, above all the
 
 ### installation
 
-Clone this repository and run
+Clone this repository `cd` into it and run
 
-    pip install -e async-train/
+    python setup.py install
 
 
 ### examples
