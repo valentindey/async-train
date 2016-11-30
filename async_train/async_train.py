@@ -8,6 +8,7 @@ from collections import OrderedDict
 import logging
 import multiprocessing_logging
 
+from async_train.utils import save_params
 from .shared import SharedParams, SharedCounter, SharedFloat
 
 
@@ -47,6 +48,16 @@ def async_agrad_update(device, build_model, **kwargs):
     inputs, cost, _ = build_model(theano_params, **kwargs)
     grads = T.grad(cost, wrt=list(theano_params.values()))
     # TODO: gradient clipping
+    # if clip_c > 0.:
+    #     g2 = 0.
+    #     for g in grads:
+    #         g2 += (g**2).sum()
+    #     new_grads = []
+    #     for g in grads:
+    #         new_grads.append(T.switch(g2 > (clip_c**2),
+    #                                        g / T.sqrt(g2) * clip_c,
+    #                                        g))
+    #     grads = new_grads
     f_grads = theano.function(inputs, grads)
 
     LOGGER.info("({}) model compiled on {}, waiting for data".format(process_name, device))
@@ -337,11 +348,9 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
         dir_path = os.path.dirname(save_to)
         if not os.path.exists(dir_path):
             os.makedirs(dir_path)
-        filename, ext = os.path.splitext(save_to)
-        extended_filename = filename + "_epoch_0_update_0" + ext
-        LOGGER.info("saving initial model parameters to {}".format(extended_filename))
-        np.savez(extended_filename, **initial_params)
-        training_parameter_file = filename + ".json"
+        save_file = save_params(initial_params, save_to, epoch_update=(0, 0))
+        LOGGER.info("update {}, saving current model parameters to {}".format(0, save_file))
+        training_parameter_file = os.path.splitext(save_to)[0] + ".json"
         LOGGER.info("saving training options to {}".format(training_parameter_file))
         train_options = {"devices": devices,
                          "update_scheme": update_scheme,
@@ -373,7 +382,8 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
                 LOGGER.info("update {}, validating".format(update_idx))
                 cur_params = shared_params.as_dict()
                 push_to_tparams(cur_params)
-                cur_valid_error = f_cost(*valid_data)  # TODO: allow valid_data in batches
+                # TODO: graphs that need modification in production mode (dropout)
+                cur_valid_error = np.mean([f_cost(*d) for d in valid_data])
                 LOGGER.info("validation error: {}".format(cur_valid_error))
                 if cur_valid_error < best_valid_error:
                     LOGGER.info("validation error did decrease compared to previous best value {}".format(best_valid_error))
@@ -391,11 +401,8 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
                     early_stop = True
 
             if save_to and update_idx % save_freq == 0:
-                cur_params = shared_params.as_dict()
-                filename, ext = os.path.splitext(save_to)
-                extended_filename = filename + "_epoch_" + str(epoch_idx) + "_update_" + str(update_idx) + ext
-                LOGGER.info("update {}, saving current model parameters to {}".format(update_idx, extended_filename))
-                np.savez(extended_filename, **cur_params)
+                save_file = save_params(shared_params.as_dict(), save_to, epoch_update=(epoch_idx, update_idx))
+                LOGGER.info("update {}, saving current model parameters to {}".format(update_idx, save_file))
 
             if data_queue.empty() or early_stop:
                 break
@@ -412,8 +419,8 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
     # daemon processes will get joined automatically
 
     if save_to:
-        LOGGER.info("saving best model parameters to {}".format(save_to))
-        np.savez(filename, **best_params)
+        save_file = save_params(shared_params.as_dict(), save_to, epoch_update=(epoch_idx, update_idx))
+        LOGGER.info("saving best model parameters to {}".format(save_file))
 
     return best_params or shared_params.as_dict()
 

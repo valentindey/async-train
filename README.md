@@ -17,6 +17,13 @@ There are a lot of possible improvements on my todo-list, above all the
  problem of slow data transfer to GPUs.
 
 
+### installation
+
+Clone this repository and run
+
+    pip install -e async-train/
+
+
 ### examples
 
 `mnist.py` provides an example of a logitic regression classifier
