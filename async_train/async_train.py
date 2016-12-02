@@ -12,11 +12,7 @@ from .utils import save_params
 from .shared import SharedParams, SharedCounter, SharedFloat
 
 
-LOGGER = logging.Logger(__name__)
-LOG_FORMATTER = logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%Y-%m-%d %H:%M:%S")
-stream_handler = multiprocessing_logging.MultiProcessingHandler("mp-handler-0", logging.StreamHandler())
-stream_handler.setFormatter(LOG_FORMATTER)
-LOGGER.addHandler(stream_handler)
+multiprocessing_logging.install_mp_handler()
 
 
 def async_agrad_update(device, build_model, **kwargs):
@@ -44,7 +40,7 @@ def async_agrad_update(device, build_model, **kwargs):
     for param_name, param in shared_params.as_dict().items():
         theano_params[param_name] = theano.shared(param, name=param_name)
 
-    LOGGER.info("({}) building model on {}".format(process_name, device))
+    logging.info("({}) building model on {}".format(process_name, device))
     inputs, cost, _ = build_model(theano_params, **kwargs)
     grads = T.grad(cost, wrt=list(theano_params.values()))
     # TODO: gradient clipping
@@ -60,13 +56,13 @@ def async_agrad_update(device, build_model, **kwargs):
     #     grads = new_grads
     f_grads = theano.function(inputs, grads)
 
-    LOGGER.info("({}) model compiled on {}, waiting for data".format(process_name, device))
+    logging.info("({}) model compiled on {}, waiting for data".format(process_name, device))
     while True:
 
         cur_data = data_queue.get()
 
         if cur_data == "STOP":
-            LOGGER.info("({}) terminating".format(process_name))
+            logging.info("({}) terminating".format(process_name))
             break
 
         cur_eta = learning_rate.get_value()
@@ -122,19 +118,19 @@ def async_da_update(device, build_model, **kwargs):
     for param_name, param in shared_params.as_dict().items():
         theano_params[param_name] = theano.shared(param, name=param_name)
 
-    LOGGER.info("({}) building model on {}".format(process_name, device))
+    logging.info("({}) building model on {}".format(process_name, device))
     inputs, cost, _ = build_model(theano_params, **kwargs)
     grads = T.grad(cost, wrt=list(theano_params.values()))
     # TODO: gradient clipping
     f_grads = theano.function(inputs, grads)
 
-    LOGGER.info("({}) model compiled on {}, waiting for data".format(process_name, device))
+    logging.info("({}) model compiled on {}, waiting for data".format(process_name, device))
     while True:
 
         cur_data = data_queue.get()
 
         if cur_data == "STOP":
-            LOGGER.info("({}) terminating".format(process_name))
+            logging.info("({}) terminating".format(process_name))
             break
 
         cur_eta = learning_rate.get_value()
@@ -191,19 +187,20 @@ def hogwild_update(device, build_model, **kwargs):
         for param_name, param in params.items():
             theano_params[param_name].set_value(param)
 
-    LOGGER.info("({}) building model on {}".format(process_name, device))
+    logging.info("({}) building model on {}".format(process_name, device))
     inputs, cost, _ = build_model(theano_params, **kwargs)
     grads = T.grad(cost, wrt=list(theano_params.values()))
     # TODO: gradient clipping
     f_grads = theano.function(inputs, grads)
 
-    LOGGER.info("({}) model compiled on {}, waiting for data".format(process_name, device))
+    logging.info("({}) model compiled on {}, waiting for data".format(process_name, device))
     while True:
 
+        logging.debug("({}) got new data sample".format(process_name))
         cur_data = data_queue.get()
 
         if cur_data == "STOP":
-            LOGGER.info("({}) terminating".format(process_name))
+            logging.info("({}) terminating".format(process_name))
             break
 
         # get current parameters from shared parameters to compute gradient with
@@ -226,17 +223,16 @@ def hogwild_update(device, build_model, **kwargs):
 
 
 def train_params(initial_params, build_model, data, devices, update_scheme="hogwild",
-                 num_epochs=10, l_rate=.01, log_level=logging.WARNING, log_file=None,
-                 valid_data=None, valid_freq=5000, patience=5,
-                 save_to=None, save_freq=5000, **kwargs):
+                 num_epochs=10, l_rate=.01, valid_data=None, valid_freq=5000, patience=5,
+                 save_to=None, save_freq=5000, display_freq=1000, **kwargs):
     """
     trains the parameters of the model compiled with 'build_model' according to 'update_scheme'
 
 
     :param initial_params:      initial parameters as OrderedDict
                                 {parameter_name: numpy_array}
-                                note that ALL parameters will be updated according to the same update rule without
-                                exceptions
+                                note that ALL parameters will be updated according to the same update
+                                rule without exceptions
     :param build_model:         a function returning a theano graph for the cost and
                                 the corresponding inputs as TensorTypes
                                 requires the parameters of the model to build as dict
@@ -247,27 +243,30 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
                                 return value)
                                 the given function must import theano inside!
                                 additional arguments to this function can be given with kwargs
-    :param data:                data points used for training as the compiled cost function expects it
-                                can be any iterable type
+    :param data:                data points used for training as the compiled cost function expects
+                                it can be any iterable type
                                 requires tuples corresponding to the number of inputs to the cost graph
-                                if mini batch training is desired, this must contain/return these batches already
+                                if mini batch training is desired, this must contain/return these
+                                batches already
     :param devices:             list of devices to run training on as expected by theano
                                 see `theano.sandbox.cuda.run`
     :param update_scheme        the update scheme to apply, one of 'hogwild', 'async_da' or 'async_agrad'
     :param num_epochs:          number of epochs, i.e. iterations over the training data
     :param l_rate:              the learning rate to apply
-    :param log_level:           level of log messages to show, see logging module
-    :param valid_data:          optional validation data
-                                also requires tuples corresponding to the number of inputs to the cost graph
-    :param valid_freq:          validation will be performed after this many updates, has no effect if valid_data
-                                is not present
-                                processing on sub-processes continues during validation, this should not be too low
-                                in order to avoid slowdowns because sub-processes need to wait for validation to finish
-                                (note that validation is currently only performed on CPU)
-    :param patience:            perform this many validations before triggering early stopping because validation error
-                                did not decrease, has no effect if valid_data is not present
+    :param valid_data:          optional validation data, also requires tuples corresponding to the number
+                                of inputs to the cost graph
+    :param valid_freq:          validation will be performed after this many updates, has no effect if
+                                valid_data is not present
+                                processing on sub-processes continues during validation, this should not
+                                be too low in order to avoid slowdowns because sub-processes need to wait
+                                for validation to finish (validation is currently only performed on CPU)
+    :param patience:            perform this many validations before triggering early stopping because
+                                validation error did not decrease, has no effect if valid_data is not
+                                present
     :param save_to:             the file to save the model parameters in as numpy npz file
-    :param save_freq:           saves the model after this many updates, has no effect if 'model_name' is not set
+    :param save_freq:           saves the model after this many updates, has no effect if 'model_name' is
+                                not set
+    :param display_freq:        logs a short info message after this many updates
     :param kwargs:              additional keyword arguments to 'build_model'
     :return:                    the trained parameters
     """
@@ -275,13 +274,7 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
     if update_scheme not in ["hogwild", "async_da", "async_agrad"]:
         raise ValueError("unsupported update scheme:" + str(update_scheme))
 
-    LOGGER.setLevel(log_level)
-    if log_file:
-        file_handler = multiprocessing_logging.MultiProcessingHandler("mp-handler-1", logging.FileHandler(log_file))
-        file_handler.setFormatter(LOG_FORMATTER)
-        LOGGER.addHandler(file_handler)
-
-    LOGGER.info("training parameters with {} on {} with learning rate {} for {} epochs"
+    logging.info("training parameters with {} on {} with learning rate {} for {} epochs"
                 .format(update_scheme, devices, l_rate, num_epochs))
 
     # global variables used in the same way by all update schemes
@@ -292,7 +285,7 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
     data_queue = mgr.Queue()
     update_notify_queue = mgr.Queue()
 
-    LOGGER.info("setting up global variables specific to update scheme")
+    logging.info("setting up global variables specific to update scheme")
     global shared_params
     global shared_z
     global shared_s
@@ -309,7 +302,7 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
             shared_z_zero[param_name] = np.zeros_like(param)
         shared_z = SharedParams(shared_z_zero, locked=True)
     elif update_scheme == "async_agrad":
-        # async AdaGrad needs again an additional map storing the squares of sums of all previous updates
+        # async AdaGrad needs again an additional map storing squares of sums of previous updates
         shared_params = SharedParams(initial_params, locked=True)
         target_func = async_agrad_update
         shared_z_zero = OrderedDict()
@@ -320,16 +313,17 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
         shared_z = SharedParams(shared_z_zero, locked=True)
         shared_s = SharedParams(shared_z_zero, locked=True)
 
-    LOGGER.info("starting processes on {} with {}".format(devices, update_scheme))
-    processes = [multiprocessing.Process(target=target_func, args=(device, build_model), kwargs=kwargs,
-                                         name="process on {}".format(device)) for device in devices]
+    logging.info("starting processes on {} with {}".format(devices, update_scheme))
+    processes = [multiprocessing.Process(target=target_func, args=(device, build_model),
+                                         kwargs=kwargs, name="process on {}".format(device))
+                 for device in devices]
     for p in processes:
         p.daemon = True
         p.start()
 
     best_params = None
     if valid_data:
-        LOGGER.info("compiling model for main process for validation")
+        logging.info("compiling model for main process for validation")
         import theano
         theano_params = OrderedDict()
         for param_name, param in initial_params.items():
@@ -349,9 +343,9 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
         if dir_path and not os.path.exists(dir_path):
             os.makedirs(dir_path)
         save_file = save_params(initial_params, save_to, epoch_update=(0, 0))
-        LOGGER.info("update {}, saving current model parameters to {}".format(0, save_file))
+        logging.info("update {}, saving current model parameters to {}".format(0, save_file))
         training_parameter_file = os.path.splitext(save_to)[0] + ".json"
-        LOGGER.info("saving training options to {}".format(training_parameter_file))
+        logging.info("saving training options to {}".format(training_parameter_file))
         train_options = {"devices": devices,
                          "update_scheme": update_scheme,
                          "l_rate": l_rate}
@@ -361,66 +355,77 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
 
     early_stop = False
 
+    epoch_idx = 0
+    update_idx = 0
     for epoch_idx in range(1, num_epochs+1):
-        LOGGER.info("epoch {}/{}".format(epoch_idx, num_epochs))
+        logging.info("epoch {}/{}".format(epoch_idx, num_epochs))
 
         # fill up the batch queue for this epoch
         for d in data:
             data_queue.put(d)
 
+        # FIXME: sometimes (?) the samples are put into the queue, but are not consumed by the processes
+        # process.is_alive() returns True...
+
         while not early_stop:
 
             # wait until a new update was made and get its number
-            # this *may* be in a somewhat weird order
+            # this *may* be not completely in order
             # but the number returned should be almost exact
             update_idx = update_notify_queue.get()
 
-            if update_idx % 1000 == 0:
-                LOGGER.info("update {}".format(update_idx))
+            if update_idx % display_freq == 0:
+                logging.info("epoch {} update {}".format(epoch_idx, update_idx))
 
             if valid_data and update_idx % valid_freq == 0:
-                LOGGER.info("update {}, validating".format(update_idx))
+                logging.info("epoch {} update {}, validating".format(epoch_idx, update_idx))
                 cur_params = shared_params.as_dict()
                 push_to_tparams(cur_params)
                 # TODO: graphs that need modification in production mode (dropout)
                 cur_valid_error = np.mean([f_cost(*d) for d in valid_data])
-                LOGGER.info("validation error: {}".format(cur_valid_error))
+                logging.info("validation error: {}".format(cur_valid_error))
                 if cur_valid_error < best_valid_error:
-                    LOGGER.info("validation error did decrease compared to previous best value {}".format(best_valid_error))
+                    logging.info("validation error did decrease compared to previous best value {}"
+                                 .format(best_valid_error))
                     patience_left = patience
                     best_params = cur_params
                     best_valid_error = cur_valid_error
                 else:
                     patience_left -= 1
-                    LOGGER.info("validation error did not decrease compared to current best value {}, patience left: {}"
-                                .format(best_valid_error, patience_left))
+                    logging.info("validation error did not decrease compared to current best value {}, "
+                                 "patience left: {}".format(best_valid_error, patience_left))
 
                 if patience_left == 0:
-                    LOGGER.info("validation error did not decrease the last {} times, triggering early stopping".format(patience))
+                    logging.info("validation error did not decrease the last {} times, triggering early "
+                                 "stopping".format(patience))
                     # early stopping triggered
                     early_stop = True
 
             if save_to and update_idx % save_freq == 0:
-                save_file = save_params(shared_params.as_dict(), save_to, epoch_update=(epoch_idx, update_idx))
-                LOGGER.info("update {}, saving current model parameters to {}".format(update_idx, save_file))
+                save_file = save_params(shared_params.as_dict(), save_to,
+                                        epoch_update=(epoch_idx, update_idx))
+                logging.info("epoch {} update {}, saving current model parameters to {}"
+                             .format(epoch_idx, update_idx, save_file))
 
             if data_queue.empty() or early_stop:
                 break
 
         if early_stop:
-            # break out of epoch loop and remove all left data points from the queue, no further processing necessary
+            # break out of epoch loop and remove all left data points from the queue
+            # no further processing necessary
             while not data_queue.empty():
                 data_queue.get()
             break
 
-    LOGGER.info("training finished")
+    logging.info("training finished")
     for _ in processes:
         data_queue.put("STOP")
     # daemon processes will get joined automatically
 
     if save_to:
-        save_file = save_params(shared_params.as_dict(), save_to, epoch_update=(epoch_idx, update_idx))
-        LOGGER.info("saving best model parameters to {}".format(save_file))
+        save_file = save_params(shared_params.as_dict(), save_to,
+                                epoch_update=(epoch_idx, update_idx))
+        logging.info("saving best model parameters to {}".format(save_file))
 
     return best_params or shared_params.as_dict()
 

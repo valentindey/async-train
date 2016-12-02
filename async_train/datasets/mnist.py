@@ -3,6 +3,7 @@
 import os
 import gzip
 import pickle
+import logging
 
 
 def load_data(flatten=False):
@@ -10,7 +11,7 @@ def load_data(flatten=False):
     datasets_dir = os.path.dirname(os.path.realpath(__file__))
     filename = os.path.join(datasets_dir, "mnist.pkl.gz")
     if not os.path.isfile(filename):
-        print("Downloading mnist data...")
+        logging.info("Downloading mnist data...")
         import urllib.request
         urllib.request.urlretrieve("https://s3.amazonaws.com/img-datasets/mnist.pkl.gz",
                                    filename)

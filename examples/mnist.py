@@ -6,6 +6,13 @@ import time
 import numpy as np
 from collections import OrderedDict
 
+# *before* importing async-train
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s - %(levelname)s %(module)s - %(message)s",
+                    datefmt="%Y-%m-%d %H:%M:%S",
+                    handlers=[logging.FileHandler("mnist.log"), logging.StreamHandler()]
+                    )
+
 from async_train.datasets import mnist
 from async_train import train_params
 
@@ -38,17 +45,19 @@ def build_model(theano_params):
 
 
 @click.command()
-@click.option("--devices", default="cpu", help="Comma separated identifiers of devices to run on.")
+@click.option("--devices", default="cpu,cpu", help="Comma separated identifiers of devices to run on.")
 @click.option("--update-scheme", default="hogwild", type=click.Choice(["hogwild", "async_da", "async_agrad"]),
               help="The asynchronous update scheme to apply")
-@click.option("--num-epochs", default=2, help="Number of epochs.")
+@click.option("--num-epochs", default=4, help="Number of epochs.")
 @click.option("--learning-rate", default=.01, help="Learning rate to apply.")
 @click.option("--save-to", default="mnist.npz", help="file to save the model to")
 def run(devices, update_scheme, num_epochs, learning_rate, save_to):
     """Runs a small example of async-train on the MNIST data set."""
 
+    logging.info("loading data")
     (X_train, Y_train), (X_test, Y_test) = mnist.load_data(flatten=True)
 
+    logging.info("preparing data")
     batch_size = 32
     data = [(X_train[i * batch_size:(i + 1) * batch_size],
              Y_train[i * batch_size:(i + 1) * batch_size])
@@ -63,12 +72,13 @@ def run(devices, update_scheme, num_epochs, learning_rate, save_to):
     trained_params = train_params(params, build_model=build_model, data=train,
                                   devices=devices.split(","), update_scheme=update_scheme,
                                   num_epochs=num_epochs, l_rate=learning_rate,
-                                  log_level=logging.INFO, log_file="mnist.log",
                                   valid_data=valid, valid_freq=100,
-                                  save_to=save_to, save_freq=10000)
+                                  save_to=save_to, save_freq=10000,
+                                  display_freq=500)
     train_time = time.time() - start_time
-    print("Training took {:.4f} seconds.".format(train_time))
-    print("(includes time used for compilation of theano functions)")
+    logging.info("Training took {:.4f} seconds. "
+                 "(including time used for compilation of theano functions)"
+                 .format(train_time))
 
     # to test the trained parameters, we need to rebuild the model
     # note that we should not import theano earlier, in order
@@ -83,11 +93,11 @@ def run(devices, update_scheme, num_epochs, learning_rate, save_to):
 
     (x, y), _, (_, accuracy) = build_model(get_theano_params(params))
     f_acc_untrained = theano.function([x, y], accuracy)
-    print("accuracy with untrained parameters:", f_acc_untrained(X_test, Y_test))
+    logging.info("accuracy with untrained parameters: {}".format(f_acc_untrained(X_test, Y_test)))
 
     (x, y), _, (_, accuracy) = build_model(get_theano_params(trained_params))
     f_acc_trained = theano.function([x, y], accuracy)
-    print("accuracy trained parameters:", f_acc_trained(X_test, Y_test))
+    logging.info("accuracy trained parameters: {}".format(f_acc_trained(X_test, Y_test)))
 
 
 if __name__ == '__main__':
