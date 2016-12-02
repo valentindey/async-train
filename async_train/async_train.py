@@ -8,7 +8,7 @@ from collections import OrderedDict
 import logging
 import multiprocessing_logging
 
-from async_train.utils import save_params
+from .utils import save_params
 from .shared import SharedParams, SharedCounter, SharedFloat
 
 
@@ -248,7 +248,7 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
                                 the given function must import theano inside!
                                 additional arguments to this function can be given with kwargs
     :param data:                data points used for training as the compiled cost function expects it
-                                can be an iterator, generator or list
+                                can be any iterable type
                                 requires tuples corresponding to the number of inputs to the cost graph
                                 if mini batch training is desired, this must contain/return these batches already
     :param devices:             list of devices to run training on as expected by theano
@@ -346,7 +346,7 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
 
     if save_to:
         dir_path = os.path.dirname(save_to)
-        if not os.path.exists(dir_path):
+        if dir_path and not os.path.exists(dir_path):
             os.makedirs(dir_path)
         save_file = save_params(initial_params, save_to, epoch_update=(0, 0))
         LOGGER.info("update {}, saving current model parameters to {}".format(0, save_file))
