@@ -344,13 +344,15 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
             os.makedirs(dir_path)
         save_file = save_params(initial_params, save_to, epoch_update=(0, 0))
         logging.info("update {}, saving current model parameters to {}".format(0, save_file))
-        training_parameter_file = os.path.splitext(save_to)[0] + ".json"
-        logging.info("saving training options to {}".format(training_parameter_file))
+        train_options_file = os.path.splitext(save_to)[0] + ".json"
+        logging.info("saving training options to {}".format(train_options_file))
         train_options = {"devices": devices,
                          "update_scheme": update_scheme,
-                         "l_rate": l_rate}
-        train_options.update(**kwargs)
-        with open(training_parameter_file, "w") as f:
+                         "l_rate": l_rate,
+                         "save_to": save_to,
+                         "patience": patience}
+        train_options.update(kwargs)
+        with open(train_options_file, "w") as f:
             json.dump(train_options, f, indent=4)
 
     early_stop = False

@@ -10,8 +10,7 @@ from collections import OrderedDict
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s %(module)s - %(message)s",
                     datefmt="%Y-%m-%d %H:%M:%S",
-                    handlers=[logging.FileHandler("mnist.log"), logging.StreamHandler()]
-                    )
+                    handlers=[logging.FileHandler("mnist.log"), logging.StreamHandler()])
 
 from async_train.datasets import mnist
 from async_train import train_params
