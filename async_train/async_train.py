@@ -224,7 +224,7 @@ def hogwild_update(device, build_model, **kwargs):
 
 def train_params(initial_params, build_model, data, devices, update_scheme="hogwild",
                  num_epochs=10, l_rate=.01, valid_data=None, valid_freq=5000, patience=5,
-                 save_to=None, save_freq=5000, display_freq=1000, **kwargs):
+                 params_dtype="float32", save_to=None, save_freq=5000, display_freq=1000, **kwargs):
     """
     trains the parameters of the model compiled with 'build_model' according to 'update_scheme'
 
@@ -263,6 +263,7 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
     :param patience:            perform this many validations before triggering early stopping because
                                 validation error did not decrease, has no effect if valid_data is not
                                 present
+    :param params_dtype:        dtype of parameters to use
     :param save_to:             the file to save the model parameters in as numpy npz file
     :param save_freq:           saves the model after this many updates, has no effect if 'model_name' is
                                 not set
@@ -290,28 +291,28 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
     global shared_z
     global shared_s
     if update_scheme == "hogwild":
-        shared_params = SharedParams(initial_params, locked=False)
+        shared_params = SharedParams(initial_params, locked=False, dtype=params_dtype)
         target_func = hogwild_update
     elif update_scheme == "async_da":
         # async DA needs an additional map storing the sum of all previous updates
         # these sums are initialized all zero
-        shared_params = SharedParams(initial_params, locked=True)
+        shared_params = SharedParams(initial_params, locked=True, dtype=params_dtype)
         target_func = async_da_update
         shared_z_zero = OrderedDict()
         for param_name, param in initial_params.items():
             shared_z_zero[param_name] = np.zeros_like(param)
-        shared_z = SharedParams(shared_z_zero, locked=True)
+        shared_z = SharedParams(shared_z_zero, locked=True, dtype=params_dtype)
     elif update_scheme == "async_agrad":
         # async AdaGrad needs again an additional map storing squares of sums of previous updates
-        shared_params = SharedParams(initial_params, locked=True)
+        shared_params = SharedParams(initial_params, locked=True, dtype=params_dtype)
         target_func = async_agrad_update
         shared_z_zero = OrderedDict()
         shared_s_zero = OrderedDict()
         for param_name, param in initial_params.items():
             shared_z_zero[param_name] = np.zeros_like(param)
             shared_s_zero[param_name] = np.zeros_like(param)
-        shared_z = SharedParams(shared_z_zero, locked=True)
-        shared_s = SharedParams(shared_z_zero, locked=True)
+        shared_z = SharedParams(shared_z_zero, locked=True, dtype=params_dtype)
+        shared_s = SharedParams(shared_z_zero, locked=True, dtype=params_dtype)
 
     logging.info("starting processes on {} with {}".format(devices, update_scheme))
     processes = [multiprocessing.Process(target=target_func, args=(device, build_model),
