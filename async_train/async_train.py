@@ -12,10 +12,7 @@ from .utils import save_params
 from .shared import SharedParams, SharedCounter, SharedFloat
 
 
-multiprocessing_logging.install_mp_handler()
-
-
-def async_agrad_update(device, build_model, **kwargs):
+def _async_agrad_update(device, build_model, **kwargs):
     """
     function run on different processes/devices to update the shared parameters
     with asynchronous adaptive gradient (async AdaGrad)
@@ -93,7 +90,7 @@ def async_agrad_update(device, build_model, **kwargs):
         update_notify_queue.put(num_update)
 
 
-def async_da_update(device, build_model, **kwargs):
+def _async_da_update(device, build_model, **kwargs):
     """
     function run on different processes/devices to update the shared parameters
     with asynchronous dual averaging
@@ -156,7 +153,7 @@ def async_da_update(device, build_model, **kwargs):
         update_notify_queue.put(num_update)
 
 
-def hogwild_update(device, build_model, **kwargs):
+def _hogwild_update(device, build_model, **kwargs):
     """
     function run on different processes/devices to update the shared parameters
     hogwild! style, i.e. parallelized SGD without any locks
@@ -272,11 +269,13 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
     :return:                    the trained parameters
     """
 
+    multiprocessing_logging.install_mp_handler()
+
     if update_scheme not in ["hogwild", "async_da", "async_agrad"]:
         raise ValueError("unsupported update scheme:" + str(update_scheme))
 
     logging.info("training parameters with {} on {} with learning rate {} for {} epochs"
-                .format(update_scheme, devices, l_rate, num_epochs))
+                 .format(update_scheme, devices, l_rate, num_epochs))
 
     # global variables used in the same way by all update schemes
     global data_queue, learning_rate, update_count, update_notify_queue
@@ -292,12 +291,12 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
     global shared_s
     if update_scheme == "hogwild":
         shared_params = SharedParams(initial_params, locked=False, dtype=params_dtype)
-        target_func = hogwild_update
+        target_func = _hogwild_update
     elif update_scheme == "async_da":
         # async DA needs an additional map storing the sum of all previous updates
         # these sums are initialized all zero
         shared_params = SharedParams(initial_params, locked=True, dtype=params_dtype)
-        target_func = async_da_update
+        target_func = _async_da_update
         shared_z_zero = OrderedDict()
         for param_name, param in initial_params.items():
             shared_z_zero[param_name] = np.zeros_like(param)
@@ -305,7 +304,7 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
     elif update_scheme == "async_agrad":
         # async AdaGrad needs again an additional map storing squares of sums of previous updates
         shared_params = SharedParams(initial_params, locked=True, dtype=params_dtype)
-        target_func = async_agrad_update
+        target_func = _async_agrad_update
         shared_z_zero = OrderedDict()
         shared_s_zero = OrderedDict()
         for param_name, param in initial_params.items():
