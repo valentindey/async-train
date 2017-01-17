@@ -12,7 +12,7 @@ from .utils import save_params
 from .shared import SharedParams, SharedCounter, SharedFloat
 
 
-def _async_agrad_update(device, build_model, **kwargs):
+def _async_agrad_update(device, build_model, clip_c=0., **kwargs):
     """
     function run on different processes/devices to update the shared parameters
     with asynchronous adaptive gradient (async AdaGrad)
@@ -23,6 +23,7 @@ def _async_agrad_update(device, build_model, **kwargs):
                             see `theano.sandbox.cuda.run`
     :param build_model:     a function returning a theano graph for the cost and
                             the corresponding inputs as TensorTypes as described in `train`
+    :param clip_c:          gradient clipping value
     """
     # importing theano only inside this function and bind it to the given device
     import theano.tensor as T
@@ -40,17 +41,14 @@ def _async_agrad_update(device, build_model, **kwargs):
     logging.info("({}) building model on {}".format(process_name, device))
     inputs, cost, _ = build_model(theano_params, **kwargs)
     grads = T.grad(cost, wrt=list(theano_params.values()))
-    # TODO: gradient clipping
-    # if clip_c > 0.:
-    #     g2 = 0.
-    #     for g in grads:
-    #         g2 += (g**2).sum()
-    #     new_grads = []
-    #     for g in grads:
-    #         new_grads.append(T.switch(g2 > (clip_c**2),
-    #                                        g / T.sqrt(g2) * clip_c,
-    #                                        g))
-    #     grads = new_grads
+    if clip_c > 0.:
+        grads_squard_sum = 0.
+        for g in grads:
+            grads_squard_sum += (g ** 2).sum()
+        grads = [T.switch(grads_squard_sum > (clip_c ** 2),
+                          g / T.sqrt(grads_squard_sum) * clip_c,
+                          g)
+                 for g in grads]
     f_grads = theano.function(inputs, grads)
 
     logging.info("({}) model compiled on {}, waiting for data".format(process_name, device))
@@ -90,7 +88,7 @@ def _async_agrad_update(device, build_model, **kwargs):
         update_notify_queue.put(num_update)
 
 
-def _async_da_update(device, build_model, **kwargs):
+def _async_da_update(device, build_model, clip_c=0., **kwargs):
     """
     function run on different processes/devices to update the shared parameters
     with asynchronous dual averaging
@@ -101,6 +99,7 @@ def _async_da_update(device, build_model, **kwargs):
                             see `theano.sandbox.cuda.run`
     :param build_model:     a function returning a theano graph for the cost and
                             the corresponding inputs as TensorTypes as described in `train`
+    :param clip_c:          gradient clipping value
     """
     # importing theano only inside this function and bind it to the given device
     import theano.tensor as T
@@ -118,7 +117,14 @@ def _async_da_update(device, build_model, **kwargs):
     logging.info("({}) building model on {}".format(process_name, device))
     inputs, cost, _ = build_model(theano_params, **kwargs)
     grads = T.grad(cost, wrt=list(theano_params.values()))
-    # TODO: gradient clipping
+    if clip_c > 0.:
+        grads_squard_sum = 0.
+        for g in grads:
+            grads_squard_sum += (g ** 2).sum()
+        grads = [T.switch(grads_squard_sum > (clip_c ** 2),
+                          g / T.sqrt(grads_squard_sum) * clip_c,
+                          g)
+                 for g in grads]
     f_grads = theano.function(inputs, grads)
 
     logging.info("({}) model compiled on {}, waiting for data".format(process_name, device))
@@ -153,7 +159,7 @@ def _async_da_update(device, build_model, **kwargs):
         update_notify_queue.put(num_update)
 
 
-def _hogwild_update(device, build_model, **kwargs):
+def _hogwild_update(device, build_model, clip_c=0., **kwargs):
     """
     function run on different processes/devices to update the shared parameters
     hogwild! style, i.e. parallelized SGD without any locks
@@ -164,6 +170,7 @@ def _hogwild_update(device, build_model, **kwargs):
                             see `theano.sandbox.cuda.run`
     :param build_model:     a function returning a theano graph for the cost and
                             the corresponding inputs as TensorTypes as described in `train`
+    :param clip_c:          gradient clipping value
     """
 
     # importing theano only inside this function and bind it to the given device
@@ -187,7 +194,14 @@ def _hogwild_update(device, build_model, **kwargs):
     logging.info("({}) building model on {}".format(process_name, device))
     inputs, cost, _ = build_model(theano_params, **kwargs)
     grads = T.grad(cost, wrt=list(theano_params.values()))
-    # TODO: gradient clipping
+    if clip_c > 0.:
+        grads_squard_sum = 0.
+        for g in grads:
+            grads_squard_sum += (g ** 2).sum()
+        grads = [T.switch(grads_squard_sum > (clip_c ** 2),
+                          g / T.sqrt(grads_squard_sum) * clip_c,
+                          g)
+                 for g in grads]
     f_grads = theano.function(inputs, grads)
 
     logging.info("({}) model compiled on {}, waiting for data".format(process_name, device))
@@ -221,7 +235,8 @@ def _hogwild_update(device, build_model, **kwargs):
 
 def train_params(initial_params, build_model, data, devices, update_scheme="hogwild",
                  num_epochs=10, l_rate=.01, valid_data=None, valid_freq=5000, patience=5,
-                 params_dtype="float32", save_to=None, save_freq=5000, display_freq=1000, **kwargs):
+                 params_dtype="float32", save_to=None, save_freq=5000, display_freq=1000,
+                 clip_c=0., **kwargs):
     """
     trains the parameters of the model compiled with 'build_model' according to 'update_scheme'
 
@@ -265,6 +280,7 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
     :param save_freq:           saves the model after this many updates, has no effect if 'model_name' is
                                 not set
     :param display_freq:        logs a short info message after this many updates
+    :param clip_c:              gradient clipping value
     :param kwargs:              additional keyword arguments to 'build_model'
     :return:                    the trained parameters
     """
@@ -314,7 +330,7 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
         shared_s = SharedParams(shared_z_zero, locked=True, dtype=params_dtype)
 
     logging.info("starting processes on {} with {}".format(devices, update_scheme))
-    processes = [multiprocessing.Process(target=target_func, args=(device, build_model),
+    processes = [multiprocessing.Process(target=target_func, args=(device, build_model, clip_c),
                                          kwargs=kwargs, name="process on {}".format(device))
                  for device in devices]
     for p in processes:
@@ -350,7 +366,8 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
                          "update_scheme": update_scheme,
                          "l_rate": l_rate,
                          "save_to": save_to,
-                         "patience": patience}
+                         "patience": patience,
+                         "clip_c": clip_c}
         train_options.update(kwargs)
         with open(train_options_file, "w") as f:
             json.dump(train_options, f, indent=4)
