@@ -101,7 +101,8 @@ class SharedFloat(object):
             self.val.value = val
         return self
 
-    def get_value(self):
+    @property
+    def value(self):
         with self.lock:
             return self.val.value
 
@@ -115,8 +116,9 @@ class SharedCounter(object):
     def increment(self, val=1):
         with self.lock:
             self.val.value += val
-        return self
+            return self.val.value
 
-    def get_value(self):
+    @property
+    def value(self):
         with self.lock:
             return self.val.value
