@@ -4,6 +4,7 @@ import os
 
 import numpy as np
 from collections import OrderedDict
+import itertools
 
 import logging
 import multiprocessing_logging
@@ -155,7 +156,7 @@ class HogwildUpdate(UpdateScheme):
 
 
 def train_params(initial_params, build_model, data, devices, update_scheme="hogwild",
-                 num_epochs=10, l_rate=.01, shuffle=True,
+                 num_epochs=10, learning_rate=.01, shuffle=True,
                  valid_data=None, valid_freq=5000, valid_device="cpu",
                  patience=5, params_dtype="float32", save_to=None, save_freq=5000, display_freq=1000,
                  clip_c=0., **kwargs):
@@ -185,7 +186,9 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
                                 see `theano.sandbox.cuda.run`
     :param update_scheme        the update scheme to apply, one of 'hogwild', 'async_da' or 'async_agrad'
     :param num_epochs:          number of epochs, i.e. iterations over the training data
-    :param l_rate:              the learning rate to apply
+    :param learning_rate:       the learning rate as float (constant) or generator that yields a new rate for each epoch
+                                a generator should generate as many learning rates as epochs,
+                                if less are generated the value generated last is maintained for the rest of training
     :param shuffle:             whether to shuffle data in between epochs or not,
                                 this requires the full `data` to be known beforehand
                                 iterators/generators are thus not allowed if set to true
@@ -215,10 +218,13 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
     if update_scheme not in ["hogwild", "async_da", "async_agrad"]:
         raise ValueError("unsupported update scheme:" + str(update_scheme))
 
-    logging.info("training parameters with {} on {} with learning rate {} for {} epochs"
-                 .format(update_scheme, devices, l_rate, num_epochs))
+    logging.info("training parameters with {} on {} with for {} epochs"
+                 .format(update_scheme, devices, num_epochs))
 
-    learning_rate = SharedFloat(l_rate)
+    if isinstance(learning_rate, float):
+        learning_rate = itertools.repeat(learning_rate)
+
+    shared_lr = SharedFloat(0.0)  # actual values will be set later
     update_count = SharedCounter()
     mgr = multiprocessing.Manager()
     data_queue = mgr.Queue()
@@ -229,7 +235,7 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
         shared_params = SharedParams(initial_params, locked=False, dtype=params_dtype)
         for device in devices:
             processes.append(HogwildUpdate(data_queue=data_queue, update_notify_queue=update_notify_queue,
-                                           learning_rate=learning_rate,
+                                           learning_rate=shared_lr,
                                            update_count=update_count, shared_params=shared_params,
                                            device=device, build_model=build_model, clip_c=clip_c,
                                            **kwargs))
@@ -243,7 +249,7 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
         shared_z = SharedParams(shared_z_zero, locked=True, dtype=params_dtype)
         for device in devices:
             processes.append(AsynchDaUpdate(data_queue=data_queue, update_notify_queue=update_notify_queue,
-                                            learning_rate=learning_rate,
+                                            learning_rate=shared_lr,
                                             update_count=update_count, shared_params=shared_params,
                                             shared_z=shared_z,
                                             device=device, build_model=build_model, clip_c=clip_c,
@@ -260,7 +266,7 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
         shared_s = SharedParams(shared_z_zero, locked=True, dtype=params_dtype)
         for device in devices:
             processes.append(AsynchAgradUpdate(data_queue=data_queue, update_notify_queue=update_notify_queue,
-                                               learning_rate=learning_rate,
+                                               learning_rate=shared_lr,
                                                update_count=update_count, shared_params=shared_params,
                                                shared_z=shared_z, shared_s=shared_s,
                                                device=device, build_model=build_model, clip_c=clip_c,
@@ -300,7 +306,6 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
         logging.info("saving training options to {}".format(train_options_file))
         train_options = {"devices": devices,
                          "update_scheme": update_scheme,
-                         "l_rate": l_rate,
                          "save_to": save_to,
                          "patience": patience,
                          "clip_c": clip_c}
@@ -313,7 +318,17 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
     epoch_idx = 0
     update_idx = 0
     for epoch_idx in range(1, num_epochs+1):
-        logging.info("epoch {}/{}".format(epoch_idx, num_epochs))
+
+        try:
+            epoch_lr = next(learning_rate)
+            shared_lr.set_value(epoch_lr)
+        except StopIteration:
+            logging.warning("could not get the next learning rate, sticking with previous value {}"
+                            .format(learning_rate.value))
+        except TypeError:
+            raise TypeError("lr_gen must be an iterator!")
+
+        logging.info("epoch {}/{}, learning rate: {:.5f}".format(epoch_idx, num_epochs, epoch_lr))
 
         if shuffle:
             shuffled_idx = np.random.permutation(len(data))
@@ -361,7 +376,7 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
                 logging.info("epoch {} update {}, saving current model parameters to {}"
                              .format(epoch_idx, update_idx, save_file))
 
-            if data_queue.empty() or early_stop:
+            if data_queue.empty():
                 break
 
         if early_stop:
