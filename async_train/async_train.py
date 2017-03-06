@@ -13,146 +13,228 @@ from .utils import save_params
 from .shared import SharedParams, SharedCounter, SharedFloat
 
 
-class UpdateScheme(multiprocessing.Process):
+def _async_agrad_update(data_queue, update_notify_queue, shared_lr, update_count,
+                        shared_params, shared_z, shared_s, device, build_model, clip_c=0., **kwargs):
+    """
+    function run on different processes/devices to update the shared parameters
+    with asynchronous adaptive gradient (async AdaGrad)
+    builds a local copy of the model for this process/device and waits for data
+    to process
 
-    def __init__(self, data_queue, update_notify_queue,
-                 learning_rate, update_count, shared_params,
-                 device, build_model, clip_c=0., **kwargs):
-        multiprocessing.Process.__init__(self)
-        self.name = "process on {}".format(device)
-        self.daemon = True
-        self._data_queue = data_queue
-        self._update_notify_queue = update_notify_queue
-        self._learning_rate = learning_rate
-        self._update_count = update_count
-        self._shared_params = shared_params
+    :param device:          the device identifier of the device to run this on
+                            see `theano.sandbox.cuda.run`
+    :param build_model:     a function returning a theano graph for the cost and
+                            the corresponding inputs as TensorTypes as described in `train`
+    :param clip_c:          gradient clipping value
+    """
+    # importing theano only inside this function and bind it to the given device
+    import theano.tensor as T
+    import theano.sandbox.cuda
+    theano.sandbox.cuda.use(device)
 
-        # importing theano only inside this function and bind it to the given device
-        import theano.tensor as T
-        import theano.sandbox.cuda
-        theano.sandbox.cuda.use(device)
+    process_name = multiprocessing.current_process().name
 
-        # stores the parameters for the currently run process as theano.shared
-        # initialized with the initial parameter values
-        self._theano_params = OrderedDict()
-        for param_name, param in self._shared_params.as_dict().items():
-            self._theano_params[param_name] = theano.shared(param, name=param_name)
+    # stores the parameters for the currently run process as theano.shared
+    # initialized with the initial parameter values
+    theano_params = OrderedDict()
+    for param_name, param in shared_params.as_dict().items():
+        theano_params[param_name] = theano.shared(param, name=param_name)
 
-        logging.info("({}) building model on {}".format(self.name, device))
-        inputs, cost, _ = build_model(self._theano_params, **kwargs)
-        grads = T.grad(cost, wrt=list(self._theano_params.values()))
-        if clip_c > 0.:
-            grads_squard_sum = 0.
-            for g in grads:
-                grads_squard_sum += (g ** 2).sum()
-            grads = [T.switch(grads_squard_sum > (clip_c ** 2),
-                              g / T.sqrt(grads_squard_sum) * clip_c,
-                              g)
-                     for g in grads]
-        self._f_grads = theano.function(inputs, grads)
-        logging.info("({}) model compiled on {}".format(self.name, device))
+    logging.info("({}) building model on {}".format(process_name, device))
+    inputs, cost, _ = build_model(theano_params, **kwargs)
+    grads = T.grad(cost, wrt=list(theano_params.values()))
+    if clip_c > 0.:
+        grads_squard_sum = 0.
+        for g in grads:
+            grads_squard_sum += (g ** 2).sum()
+        grads = [T.switch(grads_squard_sum > (clip_c ** 2),
+                          g / T.sqrt(grads_squard_sum) * clip_c,
+                          g)
+                 for g in grads]
+    f_grads = theano.function(inputs, grads)
 
-    def _push_to_tparams(self):
-        for param_name, param in self._shared_params.as_dict().items():
-            self._theano_params[param_name].set_value(param)
+    logging.info("({}) model compiled on {}, waiting for data".format(process_name, device))
+    while True:
 
+        cur_data = data_queue.get()
 
-class AsynchAgradUpdate(UpdateScheme):
+        if cur_data is None:
+            logging.info("({}) terminating".format(process_name))
+            break
 
-    def __init__(self, data_queue, update_notify_queue,
-                 learning_rate, update_count, shared_params,
-                 shared_z, shared_s,
-                 device, build_model, clip_c=0., **kwargs):
-        UpdateScheme.__init__(self, data_queue, update_notify_queue,
-                              learning_rate, update_count, shared_params,
-                              device, build_model, clip_c, **kwargs)
-        self.shared_z = shared_z
-        self.shared_s = shared_s
+        cur_eta = shared_lr.value
 
-    def run(self):
-        while True:
-            cur_data = self._data_queue.get()
-            if cur_data is None:
-                logging.info("({}) terminating".format(self.name))
-                break
-            logging.debug("({}) got new data sample".format(self.name))
+        # in the first iteration, all zs are still all zero and x would become all zero as well
+        # this solution, while trivial, is not desired here!
+        # the workaround is to "skip" the first update
+        # TODO: this workaround might not be the best solution to this problem
+        if update_count.value > 0:
+            for pname, p in shared_params.as_dict().items():
+                # get current z and s from shared vars to compute the argmin in closed form
+                G = np.sqrt(shared_s[pname])
+                G[G == 0] = .00001  # fudge factor to avoid NaNs through 0 in denominator
+                shared_params[pname] = (-cur_eta * shared_z[pname]) / G
+                # set the new values of TPARAMS
+                theano_params[pname].set_value(shared_params[pname])
+        # note: shared_params and update_count may not be in sync
+        # i.e. the current params do not correspond to the params at timestep t=update_count
 
-            cur_eta = self._learning_rate.value
+        grads = [np.asarray(g) for g in f_grads(*cur_data)]
 
-            if self._update_count > 0:
-                for param_name, p in self._shared_params.as_dict.items():
-                    G = np.sqrt(self.shared_s[param_name])
-                    G[G == 0] = 1e-5
-                    self._shared_params[param_name] = (-cur_eta * self._shared_z[param_name]) / G
-                    self._theano_params[param_name].set_value(self._shared_params[param_name])
+        for param_name, grad in zip(shared_z.keys(), grads):
+            shared_z[param_name] += grad
+            shared_s[param_name] += grad * grad
 
-            grads = [np.asarray(g) for g in self._f_grads(*cur_data)]
-
-            for param_name, grad in zip(self._shared_z.keys(), grads):
-                self.shared_z[param_name] += grad
-                self.shared_s[param_name] += grad * grad
-
-            self._update_notify_queue.put(self._update_count.increment())
+        # send information about update to main process
+        num_update = update_count.increment()
+        update_notify_queue.put(num_update)
 
 
-class AsynchDaUpdate(UpdateScheme):
+def _async_da_update(data_queue, update_notify_queue, shared_lr, update_count,
+                     shared_params, shared_z, device, build_model, clip_c=0., **kwargs):
+    """
+    function run on different processes/devices to update the shared parameters
+    with asynchronous dual averaging
+    builds a local copy of the model for this process/device and waits for data
+    to process
 
-    def __init__(self, data_queue, update_notify_queue,
-                 learning_rate, update_count, shared_params,
-                 shared_z, device, build_model, clip_c=0., **kwargs):
-        UpdateScheme.__init__(self, data_queue, update_notify_queue,
-                              learning_rate, update_count, shared_params,
-                              device, build_model, clip_c, **kwargs)
-        self.shared_z = shared_z
+    :param device:          the device identifier of the device to run this on
+                            see `theano.sandbox.cuda.run`
+    :param build_model:     a function returning a theano graph for the cost and
+                            the corresponding inputs as TensorTypes as described in `train`
+    :param clip_c:          gradient clipping value
+    """
+    # importing theano only inside this function and bind it to the given device
+    import theano.tensor as T
+    import theano.sandbox.cuda
+    theano.sandbox.cuda.use(device)
 
-    def run(self):
-        while True:
-            cur_data = self._data_queue.get()
-            if cur_data is None:
-                logging.info("({}) terminating".format(self.name))
-                break
-            logging.debug("({}) got new data sample".format(self.name))
+    process_name = multiprocessing.current_process().name
 
-            cur_eta = self._learning_rate.value
+    # stores the parameters for the currently run process as theano.shared
+    # initialized with the initial parameter values
+    theano_params = OrderedDict()
+    for param_name, param in shared_params.as_dict().items():
+        theano_params[param_name] = theano.shared(param, name=param_name)
 
-            if self._update_count > 0:
-                for param_name, p in self._shared_params.as_dict.items():
-                    self._shared_params[param_name] = -cur_eta * self._shared_z[param_name]
-                    self._theano_params[param_name].set_value(self._shared_params[param_name])
+    logging.info("({}) building model on {}".format(process_name, device))
+    inputs, cost, _ = build_model(theano_params, **kwargs)
+    grads = T.grad(cost, wrt=list(theano_params.values()))
+    if clip_c > 0.:
+        grads_squard_sum = 0.
+        for g in grads:
+            grads_squard_sum += (g ** 2).sum()
+        grads = [T.switch(grads_squard_sum > (clip_c ** 2),
+                          g / T.sqrt(grads_squard_sum) * clip_c,
+                          g)
+                 for g in grads]
+    f_grads = theano.function(inputs, grads)
 
-            grads = [np.asarray(g) for g in self._f_grads(*cur_data)]
+    logging.info("({}) model compiled on {}, waiting for data".format(process_name, device))
+    while True:
 
-            for param_name, grad in zip(self._shared_z.keys(), grads):
-                self.shared_z[param_name] += grad
+        cur_data = data_queue.get()
 
-            self._update_notify_queue.put(self._update_count.increment())
+        if cur_data is None:
+            logging.info("({}) terminating".format(process_name))
+            break
+
+        cur_eta = shared_lr.value
+
+        # in the first iteration, all zs are still all zero and x would become all zero as well
+        # this solution, while trivial, is not desired here!
+        # the workaround is to "skip" the first update
+        # TODO: this workaround might not be the best solution to this problem
+        if update_count.value > 0:
+            for param_name, param in shared_params.as_dict().items():
+                shared_params[param_name] = -cur_eta * shared_z[param_name]
+                theano_params[param_name] = shared_params[param_name]
+        # note: shared_params and update_count may not be in sync
+        # i.e. the current params do not correspond to the params at timestep t=update_count
+
+        grads = [np.asarray(g) for g in f_grads(*cur_data)]
+
+        for param_name, grad in zip(shared_z.keys(), grads):
+            shared_z[param_name] += grad
+
+        # send information about update to main process
+        num_update = update_count.increment()
+        update_notify_queue.put(num_update)
 
 
-class HogwildUpdate(UpdateScheme):
+def _hogwild_update(data_queue, update_notify_queue, shared_lr, update_count,
+                    shared_params, device, build_model, clip_c=0., **kwargs):
+    """
+    function run on different processes/devices to update the shared parameters
+    hogwild! style, i.e. parallelized SGD without any locks
+    builds a local copy of the model for this process/device and waits for data
+    to process
 
-    def __init__(self, data_queue, update_notify_queue,
-                 learning_rate, update_count, shared_params,
-                 device, build_model, clip_c=0., **kwargs):
-        UpdateScheme.__init__(self, data_queue, update_notify_queue,
-                              learning_rate, update_count, shared_params,
-                              device, build_model, clip_c, **kwargs)
+    :param device:          the device identifier of the device to run this on
+                            see `theano.sandbox.cuda.run`
+    :param build_model:     a function returning a theano graph for the cost and
+                            the corresponding inputs as TensorTypes as described in `train`
+    :param clip_c:          gradient clipping value
+    """
 
-    def run(self):
-        while True:
-            cur_data = self._data_queue.get()
-            if cur_data is None:
-                logging.info("({}) terminating".format(self.name))
-                break
-            logging.debug("({}) got new data sample".format(self.name))
+    # importing theano only inside this function and bind it to the given device
+    import theano.tensor as T
+    import theano.sandbox.cuda
+    theano.sandbox.cuda.use(device)
 
-            self._push_to_tparams()
+    process_name = multiprocessing.current_process().name
 
-            cur_grads = [np.asarray(g) for g in self._f_grads(*cur_data)]
+    # stores the parameters for the currently run process as theano.shared
+    # initialized with the initial parameter values
+    theano_params = OrderedDict()
+    for param_name, param in shared_params.as_dict().items():
+        theano_params[param_name] = theano.shared(param, name=param_name)
 
-            for param_name, grad in zip(self._shared_params.keys(), cur_grads):
-                self._shared_params[param_name] -= self._learning_rate.value * grad
+    # function to update theano_params
+    def push_to_tparams(params):
+        for param_name, param in params.items():
+            theano_params[param_name].set_value(param)
 
-            self._update_notify_queue.put(self._update_count.increment())
+    logging.info("({}) building model on {}".format(process_name, device))
+    inputs, cost, _ = build_model(theano_params, **kwargs)
+    grads = T.grad(cost, wrt=list(theano_params.values()))
+    if clip_c > 0.:
+        grads_squard_sum = 0.
+        for g in grads:
+            grads_squard_sum += (g ** 2).sum()
+        grads = [T.switch(grads_squard_sum > (clip_c ** 2),
+                          g / T.sqrt(grads_squard_sum) * clip_c,
+                          g)
+                 for g in grads]
+    f_grads = theano.function(inputs, grads)
+
+    logging.info("({}) model compiled on {}, waiting for data".format(process_name, device))
+    while True:
+
+        logging.debug("({}) got new data sample".format(process_name))
+        cur_data = data_queue.get()
+
+        if cur_data is None:
+            logging.info("({}) terminating".format(process_name))
+            break
+
+        # get current parameters from shared parameters to compute gradient with
+        push_to_tparams(shared_params.as_dict())
+
+        # calculating the gradients with current data
+        # we might need to cast to numpy arrays when working on GPU
+        # the results could be wrapped in CudaNdArrays
+        cur_grads = [np.asarray(g) for g in f_grads(*cur_data)]
+
+        # this can not be achieved with the updates parameter of theano.function()
+        # as we update the shared parameters which are not stored as theano.shared
+        for param_name, grad in zip(shared_params.keys(), cur_grads):
+            # apply standard SGD rule p <- p - learning_rate*gradient
+            shared_params[param_name] -= shared_lr.value * grad
+
+        # send information about update to main process
+        num_update = update_count.increment()
+        update_notify_queue.put(num_update)
 
 
 def train_params(initial_params, build_model, data, devices, update_scheme="hogwild",
@@ -218,7 +300,7 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
     if update_scheme not in ["hogwild", "async_da", "async_agrad"]:
         raise ValueError("unsupported update scheme:" + str(update_scheme))
 
-    logging.info("training parameters with {} on {} with for {} epochs"
+    logging.info("training parameters with {} on {} for {} epochs"
                  .format(update_scheme, devices, num_epochs))
 
     if isinstance(learning_rate, float):
@@ -234,11 +316,11 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
     if update_scheme == "hogwild":
         shared_params = SharedParams(initial_params, locked=False, dtype=params_dtype)
         for device in devices:
-            processes.append(HogwildUpdate(data_queue=data_queue, update_notify_queue=update_notify_queue,
-                                           learning_rate=shared_lr,
-                                           update_count=update_count, shared_params=shared_params,
-                                           device=device, build_model=build_model, clip_c=clip_c,
-                                           **kwargs))
+            processes.append(multiprocessing.Process(target=_hogwild_update,
+                                                     args=(data_queue, update_notify_queue, shared_lr, update_count,
+                                                           shared_params, device, build_model, clip_c),
+                                                     kwargs=kwargs))
+
     elif update_scheme == "async_da":
         # async DA needs an additional map storing the sum of all previous updates
         # these sums are initialized all zero
@@ -248,12 +330,10 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
             shared_z_zero[param_name] = np.zeros_like(param)
         shared_z = SharedParams(shared_z_zero, locked=True, dtype=params_dtype)
         for device in devices:
-            processes.append(AsynchDaUpdate(data_queue=data_queue, update_notify_queue=update_notify_queue,
-                                            learning_rate=shared_lr,
-                                            update_count=update_count, shared_params=shared_params,
-                                            shared_z=shared_z,
-                                            device=device, build_model=build_model, clip_c=clip_c,
-                                            **kwargs))
+            processes.append(multiprocessing.Process(target=_async_da_update,
+                                                     args=(data_queue, update_notify_queue, shared_lr, update_count,
+                                                           shared_params, shared_z, device, build_model, clip_c),
+                                                     kwargs=kwargs))
     elif update_scheme == "async_agrad":
         # async AdaGrad needs again an additional map storing squares of sums of previous updates
         shared_params = SharedParams(initial_params, locked=True, dtype=params_dtype)
@@ -265,12 +345,10 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
         shared_z = SharedParams(shared_z_zero, locked=True, dtype=params_dtype)
         shared_s = SharedParams(shared_z_zero, locked=True, dtype=params_dtype)
         for device in devices:
-            processes.append(AsynchAgradUpdate(data_queue=data_queue, update_notify_queue=update_notify_queue,
-                                               learning_rate=shared_lr,
-                                               update_count=update_count, shared_params=shared_params,
-                                               shared_z=shared_z, shared_s=shared_s,
-                                               device=device, build_model=build_model, clip_c=clip_c,
-                                               **kwargs))
+            processes.append(multiprocessing.Process(target=_async_agrad_update,
+                                                     args=(data_queue, update_notify_queue, shared_lr, update_count,
+                                                           shared_params, shared_z, shared_s, device, build_model, clip_c),
+                                                     kwargs=kwargs))
 
     logging.info("starting sub processes")
     for p in processes:

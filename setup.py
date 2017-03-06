@@ -5,5 +5,6 @@ setup(
     version="0.0.1",
     license="MIT",
     install_requires=["theano", "multiprocessing-logging"],
-    packages=find_packages()
+    packages=find_packages(),
+    author="Valentin Deyringer"
 )

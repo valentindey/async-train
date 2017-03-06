@@ -19,10 +19,13 @@ There are a lot of possible improvements on my todo-list, above all the
 
 ### installation
 
-Clone this repository `cd` into it and run
+Clone this repository `cd` into it and run one of the following
 
     python setup.py install
+    pip install .
 
+note that this project is under development and subject to ongoing
+changes
 
 ### examples
 
