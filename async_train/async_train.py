@@ -352,6 +352,7 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
 
     logging.info("starting sub processes")
     for p in processes:
+        p.daemon = True
         p.start()
 
     best_params = None
@@ -467,7 +468,9 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
     logging.info("training finished, stopping processes")
     for _ in processes:
         data_queue.put(None)
-    # daemon processes will get joined automatically
+    # daemon processes will end as soon as they consumed all data
+    # if the above loop ended with early stopping this is ensured in the corresponding if statement
+    # otherwise, the queues should be empty anyway
 
     if save_to:
         save_file = save_params(best_params or shared_params.as_dict(), save_to,
