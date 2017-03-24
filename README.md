@@ -1,7 +1,8 @@
 # async-train
 
 This project aims to offer a framework to train machine learning models
- defined as [theano](https://github.com/Theano/theano/) computational graphs with asynchronous algorithms.
+ defined with [theano](https://github.com/Theano/theano/) with
+ asynchronous optimization algorithms (data parallelism).
  Obviously, `theano` is a requirement.
 
 Currently the _hogwild!_ algorithm [\[1\]](#ref1), _asynchronous dual
@@ -10,36 +11,33 @@ Currently the _hogwild!_ algorithm [\[1\]](#ref1), _asynchronous dual
 Also, currently only python3 is supported, i.e. the code is only tested
  against this version of python.
 
-*async-train* supports training on multiple GPUs. While this is actually
- the main objective, it is not thoroughly tested, yet.
+*async-train* supports training on multiple GPUs and works with theano's
+ new [`gpuarray` backend](http://deeplearning.net/software/theano/tutorial/using_gpu.html#gpuarray)
 
-There are a lot of possible improvements on my todo-list, above all the 
- problem of slow data transfer to GPUs.
+There are a lot of improvements on my todo-list and the code is subject
+ to ongoing changes.
 
+People interested in data parallelism for theano models might also want
+ to check out [platoon](https://github.com/mila-udem/platoon/).
 
 ### installation
 
-Clone this repository `cd` into it and run one of the following
-
-    python setup.py install
-    pip install .
-
-note that this project is under development and subject to ongoing
-changes
+    pip install git+http://github.com/valentindey/async-train
 
 ### examples
 
-`mnist.py` provides an example of a logitic regression classifier
- trained for classifying the MNIST data set. While not being meaningful, 
+`mnist.py` provides an example of a logitic regression classifier and
+ CNN model trained for classifying the MNIST data set.
+ While not being really meaningful due to its simplicity (and fast
+ training),
  this exemplifies the usage of *async-train* in code form.
- (_async\_da_ seems not work very well in this setting)
+ (_async\_da_ seems not work very well...)
 
 To see some options to run it, call
 
     ./mnist.py --help
 
-There are more examples to come. They most probably all will require
- `click` for command line argument parsing.
+Needs the module [click](http://click.pocoo.org/) installed.
 
 
 ### references

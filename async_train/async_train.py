@@ -21,16 +21,15 @@ def _async_agrad_update(data_queue, update_notify_queue, shared_lr, update_count
     builds a local copy of the model for this process/device and waits for data
     to process
 
-    :param device:          the device identifier of the device to run this on
-                            see `theano.sandbox.cuda.run`
+    :param device:          the device identifier of the device to run this on (theanos gpuarray backend)
     :param build_model:     a function returning a theano graph for the cost and
                             the corresponding inputs as TensorTypes as described in `train`
     :param clip_c:          gradient clipping value
     """
     # importing theano only inside this function and bind it to the given device
     import theano.tensor as T
-    import theano.sandbox.cuda
-    theano.sandbox.cuda.use(device)
+    import theano.gpuarray
+    theano.gpuarray.use(device)
 
     process_name = multiprocessing.current_process().name
 
@@ -98,16 +97,15 @@ def _async_da_update(data_queue, update_notify_queue, shared_lr, update_count,
     builds a local copy of the model for this process/device and waits for data
     to process
 
-    :param device:          the device identifier of the device to run this on
-                            see `theano.sandbox.cuda.run`
+    :param device:          the device identifier of the device to run this on (theanos gpuarray backend)
     :param build_model:     a function returning a theano graph for the cost and
                             the corresponding inputs as TensorTypes as described in `train`
     :param clip_c:          gradient clipping value
     """
     # importing theano only inside this function and bind it to the given device
     import theano.tensor as T
-    import theano.sandbox.cuda
-    theano.sandbox.cuda.use(device)
+    import theano.gpuarray
+    theano.gpuarray.use(device)
 
     process_name = multiprocessing.current_process().name
 
@@ -170,8 +168,7 @@ def _hogwild_update(data_queue, update_notify_queue, shared_lr, update_count,
     builds a local copy of the model for this process/device and waits for data
     to process
 
-    :param device:          the device identifier of the device to run this on
-                            see `theano.sandbox.cuda.run`
+    :param device:          the device identifier of the device to run this on (theanos gpuarray backend)
     :param build_model:     a function returning a theano graph for the cost and
                             the corresponding inputs as TensorTypes as described in `train`
     :param clip_c:          gradient clipping value
@@ -179,8 +176,8 @@ def _hogwild_update(data_queue, update_notify_queue, shared_lr, update_count,
 
     # importing theano only inside this function and bind it to the given device
     import theano.tensor as T
-    import theano.sandbox.cuda
-    theano.sandbox.cuda.use(device)
+    import theano.gpuarray
+    theano.gpuarray.use(device)
 
     process_name = multiprocessing.current_process().name
 
@@ -264,8 +261,7 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
                                 it can be any iterable type
                                 requires tuples corresponding to the number of inputs to the cost graph
                                 if mini batch processing is desired, the data must come in appropriate batches already
-    :param devices:             list of devices to run training on as expected by theano
-                                see `theano.sandbox.cuda.run`
+    :param devices:             list of devices to run training on as expected by theano's gpuarray backend
     :param update_scheme        the update scheme to apply, one of 'hogwild', 'async_da' or 'async_agrad'
     :param num_epochs:          number of epochs, i.e. iterations over the training data
     :param learning_rate:       the learning rate as float (constant) or generator that yields a new rate for each epoch
@@ -359,8 +355,8 @@ def train_params(initial_params, build_model, data, devices, update_scheme="hogw
     if valid_data:
         logging.info("compiling model for main process for validation")
         import theano
-        import theano.sandbox.cuda
-        theano.sandbox.cuda.use(valid_device)
+        import theano.gpuarray
+        theano.gpuarray.use(valid_device)
         theano_params = OrderedDict()
         for param_name, param in initial_params.items():
             theano_params[param_name] = theano.shared(param, name=param_name)
